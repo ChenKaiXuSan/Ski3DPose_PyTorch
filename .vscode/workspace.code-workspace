@@ -29,6 +29,12 @@
 				"packageManager": "ms-python.python:pip",
 				"workspace": "data"
 			}
-		]
+		],
+		"chat.tools.terminal.autoApprove": {
+			"/^/opt/conda/envs/sam_3d_body/bin/python eval_true_data/batch_visualize_all_frames\\.py --num-workers 1 --persons run_3 --show-joint-labels$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
+		}
 	}
 }
