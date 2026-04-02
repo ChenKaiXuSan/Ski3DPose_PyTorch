@@ -21,6 +21,22 @@ RE_FRAME = re.compile(r"^frame_(\d+)\.png$")
 RE_KPT2D_PER_FRAME = re.compile(r"^kpt2d_(\d+)\.npy$")
 RE_GENERIC_PER_FRAME_NPY = re.compile(r"^(.+?)_(\d+)\.npy$")
 RE_HELPER_JOINT = re.compile(r"(twist|roll|end|helper|ik|pole|weapon|prop|socket)", re.IGNORECASE)
+KPT2D_VARIANT_NAMES = ("character", "pole", "ski")
+
+
+def resolve_default_dataset_root() -> Path:
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir.parent / "SkiDataset",
+        script_dir.parent / "SkiDataset" / "female",
+        script_dir.parent / "SkiDataset" / "male",
+        Path.cwd() / "SkiDataset",
+        Path.cwd() / "unity" / "SkiDataset",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return script_dir.parent / "SkiDataset"
 
 
 @dataclass
@@ -114,8 +130,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=(Path(__file__).resolve().parents[1] / "SkiDataset"),
-        help="Dataset root path (default: ../SkiDataset)",
+        default=resolve_default_dataset_root(),
+        help="Dataset root path (default: auto-detected SkiDataset location)",
     )
     parser.add_argument(
         "--output-dir",
@@ -319,15 +335,33 @@ def detect_kpt2d_files(kpt2d_dir: Path) -> tuple[Path | None, Path | None, list[
     if not kpt2d_dir.exists():
         return None, None, [], None
 
-    npy_files = sorted([p for p in kpt2d_dir.glob("*.npy") if p.is_file()])
-    npz_files = sorted([p for p in kpt2d_dir.glob("*.npz") if p.is_file()])
+    candidate_dirs: list[Path] = [kpt2d_dir / name for name in KPT2D_VARIANT_NAMES if (kpt2d_dir / name).is_dir()]
+    if not candidate_dirs:
+        candidate_dirs = [kpt2d_dir]
+
+    selected_dir: Path | None = None
+    npy_files: list[Path] = []
+    npz_files: list[Path] = []
+    for candidate_dir in candidate_dirs:
+        candidate_npy = sorted([p for p in candidate_dir.glob("*.npy") if p.is_file()])
+        candidate_npz = sorted([p for p in candidate_dir.glob("*.npz") if p.is_file()])
+        if candidate_npy or candidate_npz:
+            selected_dir = candidate_dir
+            npy_files = candidate_npy
+            npz_files = candidate_npz
+            break
+
+    if selected_dir is None:
+        selected_dir = candidate_dirs[0]
+        npy_files = sorted([p for p in selected_dir.glob("*.npy") if p.is_file()])
+        npz_files = sorted([p for p in selected_dir.glob("*.npz") if p.is_file()])
 
     # Prefer canonical names if present.
-    main_npy = kpt2d_dir / "kpt2d.npy"
+    main_npy = selected_dir / "kpt2d.npy"
     if not main_npy.exists():
         main_npy = None
 
-    main_npz = kpt2d_dir / "kpt2d.npz"
+    main_npz = selected_dir / "kpt2d.npz"
     if not main_npz.exists():
         main_npz = None
 
@@ -361,6 +395,24 @@ def detect_kpt2d_files(kpt2d_dir: Path) -> tuple[Path | None, Path | None, list[
         per_frame_files = sorted(per_frame_groups[selected_prefix])
 
     return main_npy, main_npz, per_frame_files, selected_prefix
+
+
+def resolve_kpt2d_frame_file(kpt2d_dir: Path, frame_index: int, prefix: str | None = None) -> Path | None:
+    candidate_dirs: list[Path] = [kpt2d_dir / name for name in KPT2D_VARIANT_NAMES if (kpt2d_dir / name).is_dir()]
+    if not candidate_dirs:
+        candidate_dirs = [kpt2d_dir]
+
+    candidate_names: list[str] = []
+    if prefix:
+        candidate_names.append(f"{prefix}_{frame_index:06d}.npy")
+    candidate_names.append(f"kpt2d_{frame_index:06d}.npy")
+
+    for candidate_dir in candidate_dirs:
+        for candidate_name in candidate_names:
+            candidate = candidate_dir / candidate_name
+            if candidate.exists():
+                return candidate
+    return None
 
 
 def count_gaps(indices: list[int]) -> int:
@@ -935,32 +987,16 @@ def validate_action(
 
     expected_sampled: int | None = None
     expected_joints: int | None = None
-    image_w = 1920
-    image_h = 1080
     if report.sequence:
         sampled_val = report.sequence.get("sampled_frames")
         joints_val = report.sequence.get("joints_count")
-        width_val = report.sequence.get("width", 1920)
-        height_val = report.sequence.get("height", 1080)
 
         if sampled_val is not None:
             expected_sampled = int(sampled_val)
         if joints_val is not None:
             expected_joints = int(joints_val)
-        image_w = int(width_val)
-        image_h = int(height_val)
-
-    joint_names_path = action_dir / "meta" / "joint_names.json"
-    joint_names_json = read_json(joint_names_path) if joint_names_path.exists() else None
-    auto_main_joint_indices: set[int] | None = None
-    if joint_names_json:
-        joint_names_val = joint_names_json.get("joint_names")
-        if isinstance(joint_names_val, list):
-            names = [str(x) for x in joint_names_val]
-            auto_main_joint_indices = auto_select_main_joint_indices(names)
 
     shared_cam_root = resolve_shared_camera_root(dataset_root, node)
-    overlays_made = 0
 
     for cam_id in sorted(camera_ids):
         cam = CameraReport(camera_id=cam_id)
@@ -1071,20 +1107,11 @@ def validate_action(
                 cam.overlay_point_source = "npz"
                 return reshape_kpt2d_points(npz_kpt_shape, npz_kpt_data, frame_index)
 
-            per_frame_kpt = None
-            if kpt2d_prefix:
-                cand = kpt2d_dir / f"{kpt2d_prefix}_{frame_index:06d}.npy"
-                if cand.exists():
-                    per_frame_kpt = cand
-            if per_frame_kpt is None:
-                cand = kpt2d_dir / f"kpt2d_{frame_index:06d}.npy"
-                if cand.exists():
-                    per_frame_kpt = cand
-
-            if per_frame_kpt is not None and per_frame_kpt.exists():
+            per_frame_kpt = resolve_kpt2d_frame_file(kpt2d_dir, frame_index, kpt2d_prefix)
+            if per_frame_kpt is not None:
                 shp, data = parse_npy_float32_data(per_frame_kpt)
                 if shp and data is not None:
-                    cam.overlay_point_source = "npy-per-frame"
+                    cam.overlay_point_source = f"npy-per-frame:{per_frame_kpt.parent.name}"
                     return reshape_kpt2d_points(shp, data)
 
             if main_kpt_shape and main_kpt_data is not None:
@@ -1092,65 +1119,6 @@ def validate_action(
                 return reshape_kpt2d_points(main_kpt_shape, main_kpt_data, frame_index)
 
             return []
-
-        if overlay_all_frames and frame_files:
-            for frame_path in frame_files:
-                m = RE_FRAME.match(frame_path.name)
-                if not m:
-                    continue
-                target_idx = int(m.group(1))
-                points = get_points_for_frame(target_idx)
-                if not points:
-                    continue
-
-                rel = frame_path.relative_to(dataset_root)
-                overlay_path = (overlay_all_root / rel).with_suffix(".svg")
-                title = f"{report.action_name} | {cam_id} | {frame_path.name}"
-                draw_indices = viz_main_joint_indices
-                if draw_indices is None and auto_main_joint_indices is not None and viz_auto_filter_helper_joints:
-                    draw_indices = auto_main_joint_indices
-                save_kpt_overlay_svg(
-                    overlay_path,
-                    frame_path,
-                    image_w,
-                    image_h,
-                    points,
-                    title,
-                    y_flip=False,
-                    embed_image=True,
-                    conf_threshold=viz_conf_threshold,
-                    main_joint_indices=draw_indices,
-                )
-                cam.overlay_all_count += 1
-                if not cam.overlay_svg:
-                    cam.overlay_svg = str(overlay_path)
-
-        # overlay examples: generate for first N cameras per action
-        if not overlay_all_frames and overlays_made < overlay_per_action and frame_indices:
-            target_idx = frame_indices[len(frame_indices) // 2]
-            frame_path = frame_dir / f"frame_{target_idx:06d}.png"
-            points = get_points_for_frame(target_idx)
-
-            if points and frame_path.exists():
-                safe_action = re.sub(r"[^A-Za-z0-9_.-]+", "_", report.action_name)
-                overlay_path = overlay_dir / f"overlay_{safe_action}_{cam_id}_{target_idx:06d}.svg"
-                title = f"{report.action_name} | {cam_id} | frame_{target_idx:06d}"
-                draw_indices = viz_main_joint_indices
-                if draw_indices is None and auto_main_joint_indices is not None and viz_auto_filter_helper_joints:
-                    draw_indices = auto_main_joint_indices
-                save_kpt_overlay_svg(
-                    overlay_path,
-                    frame_path,
-                    image_w,
-                    image_h,
-                    points,
-                    title,
-                    y_flip=False,
-                    conf_threshold=viz_conf_threshold,
-                    main_joint_indices=draw_indices,
-                )
-                cam.overlay_svg = str(overlay_path)
-                overlays_made += 1
 
         report.camera_reports.append(cam)
 
@@ -1280,6 +1248,35 @@ def generate_visuals(report: FullReport, output_dir: Path) -> list[str]:
     return generated
 
 
+def build_report(actions: list[ActionReport], dataset_root: Path) -> FullReport:
+    summary = Summary(checked_at_utc=datetime.utcnow().isoformat() + "Z", dataset_root=str(dataset_root))
+    summary.action_count = len(actions)
+    summary.camera_count = sum(len(a.camera_reports) for a in actions)
+
+    all_issues = [i for a in actions for i in (a.issues + [ii for c in a.camera_reports for ii in c.issues])]
+    summary.error_count = sum(1 for i in all_issues if i.severity == "ERROR")
+    summary.warn_count = sum(1 for i in all_issues if i.severity == "WARN")
+    summary.info_count = sum(1 for i in all_issues if i.severity == "INFO")
+    summary.passed = summary.error_count == 0
+
+    return FullReport(summary=summary, actions=actions)
+
+
+def write_report_files(report: FullReport, report_dir: Path, stamp: str) -> tuple[Path, Path]:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report.visuals = generate_visuals(report, report_dir)
+
+    json_path = report_dir / f"dataset_check_report_{stamp}.json"
+    md_path = report_dir / f"dataset_check_report_{stamp}.md"
+
+    json_path.write_text(
+        json.dumps({"summary": asdict(report.summary), "visuals": report.visuals, "actions": [asdict(a) for a in report.actions]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    md_path.write_text(to_markdown(report), encoding="utf-8")
+    return json_path, md_path
+
+
 def to_markdown(report: FullReport) -> str:
     s = report.summary
     lines: list[str] = []
@@ -1369,15 +1366,13 @@ def main() -> int:
             print("[check.py] ERROR: --viz-main-joints 格式非法，应为逗号分隔整数，如 0,1,2,5")
             return 2
 
-    summary = Summary(checked_at_utc=datetime.utcnow().isoformat() + "Z", dataset_root=str(dataset_root))
     nodes = discover_action_nodes(dataset_root)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if not nodes:
-        summary.passed = False
-        summary.error_count = 1
-        report = FullReport(
-            summary=summary,
-            actions=[ActionReport(action_name="(none)", action_path=str(dataset_root), issues=[Issue("ERROR", "dataset", "未发现动作目录")])],
+        report = build_report(
+            [ActionReport(action_name="(none)", action_path=str(dataset_root), issues=[Issue("ERROR", "dataset", "未发现动作目录")])],
+            dataset_root,
         )
     else:
         overlay_dir = output_dir / "figures" / "overlays"
@@ -1403,39 +1398,27 @@ def main() -> int:
             )
             for n in nodes
         ]
-        summary.action_count = len(actions)
-        summary.camera_count = sum(len(a.camera_reports) for a in actions)
-
-        all_issues = [i for a in actions for i in (a.issues + [ii for c in a.camera_reports for ii in c.issues])]
-        summary.error_count = sum(1 for i in all_issues if i.severity == "ERROR")
-        summary.warn_count = sum(1 for i in all_issues if i.severity == "WARN")
-        summary.info_count = sum(1 for i in all_issues if i.severity == "INFO")
-        summary.passed = summary.error_count == 0
-
-        report = FullReport(summary=summary, actions=actions)
+        report = build_report(actions, dataset_root)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    report.visuals = generate_visuals(report, output_dir)
+    json_path, md_path = write_report_files(report, output_dir, stamp)
 
-    json_path = output_dir / f"dataset_check_report_{stamp}.json"
-    md_path = output_dir / f"dataset_check_report_{stamp}.md"
-
-    json_path.write_text(
-        json.dumps({"summary": asdict(report.summary), "visuals": report.visuals, "actions": [asdict(a) for a in report.actions]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    md_path.write_text(to_markdown(report), encoding="utf-8")
+    if any(a.character_name for a in report.actions):
+        for character_name in sorted({a.character_name for a in report.actions if a.character_name}):
+            character_actions = [a for a in report.actions if a.character_name == character_name]
+            character_report = build_report(character_actions, dataset_root)
+            character_dir = output_dir / character_name
+            write_report_files(character_report, character_dir, stamp)
 
     print(f"[check.py] dataset_root = {dataset_root}")
-    print(f"[check.py] actions = {summary.action_count}, cameras = {summary.camera_count}")
-    print(f"[check.py] errors = {summary.error_count}, warnings = {summary.warn_count}, passed = {summary.passed}")
+    print(f"[check.py] actions = {report.summary.action_count}, cameras = {report.summary.camera_count}")
+    print(f"[check.py] errors = {report.summary.error_count}, warnings = {report.summary.warn_count}, passed = {report.summary.passed}")
     print(f"[check.py] report(json) = {json_path}")
     print(f"[check.py] report(md)   = {md_path}")
     print(f"[check.py] visuals = {len(report.visuals)} files in {output_dir / 'figures'}")
 
-    return 0 if summary.passed else 2
+    return 0 if report.summary.passed else 2
 
 
 if __name__ == "__main__":

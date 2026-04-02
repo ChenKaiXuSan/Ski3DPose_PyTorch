@@ -11,6 +11,22 @@ from pathlib import Path
 
 RE_FRAME_PNG = re.compile(r"^frame_(\d+)\.png$")
 RE_KPT2D_NPY = re.compile(r"^kpt2d_(\d+)\.npy$")
+KPT2D_VARIANT_NAMES = ("character", "pole", "ski")
+
+
+def resolve_default_dataset_root() -> Path:
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir.parent / "SkiDataset",
+        script_dir.parent / "SkiDataset" / "female",
+        script_dir.parent / "SkiDataset" / "male",
+        Path.cwd() / "SkiDataset",
+        Path.cwd() / "unity" / "SkiDataset",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return script_dir.parent / "SkiDataset"
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,8 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=(Path(__file__).resolve().parents[1] / "SkiDataset"),
-        help="Dataset root path (default: ../SkiDataset)",
+        default=resolve_default_dataset_root(),
+        help="Dataset root path (default: auto-detected SkiDataset location)",
     )
     parser.add_argument(
         "--character",
@@ -134,6 +150,42 @@ def list_camera_ids(action_dir: Path) -> list[str]:
     if not kpt2d_root.exists():
         return []
     return sorted([d.name for d in kpt2d_root.iterdir() if d.is_dir()])
+
+
+def resolve_kpt2d_variant_paths(kpt2d_dir: Path, frame_id: int) -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    for variant in KPT2D_VARIANT_NAMES:
+        variant_dir = kpt2d_dir / variant
+        if not variant_dir.is_dir():
+            continue
+        candidate = variant_dir / f"kpt2d_{frame_id:06d}.npy"
+        if candidate.exists():
+            out[variant] = candidate
+
+    if not out:
+        candidate = kpt2d_dir / f"kpt2d_{frame_id:06d}.npy"
+        if candidate.exists():
+            out["kpt2d"] = candidate
+
+    return out
+
+
+def resolve_kpt3d_variant_paths(kpt3d_dir: Path, frame_id: int) -> dict[str, Path]:
+    out: dict[str, Path] = {}
+    for variant in KPT2D_VARIANT_NAMES:
+        variant_dir = kpt3d_dir / variant
+        if not variant_dir.is_dir():
+            continue
+        candidate = variant_dir / f"frame_{frame_id:06d}.npy"
+        if candidate.exists():
+            out[variant] = candidate
+
+    if not out:
+        candidate = kpt3d_dir / f"frame_{frame_id:06d}.npy"
+        if candidate.exists():
+            out["kpt3d"] = candidate
+
+    return out
 
 
 def discover_actions(character_root: Path) -> list[str]:
@@ -481,9 +533,9 @@ def main() -> int:
 
         frame_dir = action_dir / "frames" / f"capture_{camera_id}"
         kpt2d_dir = action_dir / "kpt2d" / camera_id
-        kpt3d_path = action_dir / "kpt3d" / "kpt3d.npy"
+        kpt3d_dir = action_dir / "kpt3d"
 
-        if not frame_dir.exists() or not kpt2d_dir.exists() or not kpt3d_path.exists():
+        if not frame_dir.exists() or not kpt2d_dir.exists() or not kpt3d_dir.exists():
             print(f"[WARN] skip {character}/{action}: missing frames/kpt2d/kpt3d path")
             continue
 
@@ -494,16 +546,14 @@ def main() -> int:
             continue
 
         out_root = args.out_dir / character / action / camera_id
-        out_2d = out_root / "2d"
-        out_3d = out_root / "3d"
-        out_2d.mkdir(parents=True, exist_ok=True)
-        out_3d.mkdir(parents=True, exist_ok=True)
 
         rendered_2d = 0
+        rendered_3d = 0
         for frame_id in target_ids:
             frame_png = frame_dir / f"frame_{frame_id:06d}.png"
-            kpt2d_npy = kpt2d_dir / f"kpt2d_{frame_id:06d}.npy"
-            if not frame_png.exists() or not kpt2d_npy.exists():
+            variant_paths = resolve_kpt2d_variant_paths(kpt2d_dir, frame_id)
+            kpt3d_variant_paths = resolve_kpt3d_variant_paths(kpt3d_dir, frame_id)
+            if not frame_png.exists() or not variant_paths or not kpt3d_variant_paths:
                 continue
 
             size = parse_png_size(frame_png)
@@ -511,33 +561,39 @@ def main() -> int:
                 continue
             width, height = size
 
-            shape, data = parse_npy_float32(kpt2d_npy)
-            if shape is None or data is None:
-                continue
+            for variant_name, kpt2d_npy in variant_paths.items():
+                shape, data = parse_npy_float32(kpt2d_npy)
+                if shape is None or data is None:
+                    continue
 
-            points2d = reshape_2d_points(shape, data)
-            title = f"{character}/{action}/{camera_id} frame={frame_id:06d}"
-            save_2d_overlay_svg(
-                out_2d / f"overlay_{frame_id:06d}.svg",
-                frame_png,
-                width,
-                height,
-                points2d,
-                title,
-                args.conf_threshold,
-                args.y_flip,
-            )
-            rendered_2d += 1
+                points2d = reshape_2d_points(shape, data)
+                title = f"{character}/{action}/{camera_id}/{variant_name} frame={frame_id:06d}"
+                out_2d = out_root / variant_name / "2d"
+                out_2d.mkdir(parents=True, exist_ok=True)
+                save_2d_overlay_svg(
+                    out_2d / f"overlay_{frame_id:06d}.svg",
+                    frame_png,
+                    width,
+                    height,
+                    points2d,
+                    title,
+                    args.conf_threshold,
+                    args.y_flip,
+                )
+                rendered_2d += 1
 
-        shape3d, data3d = parse_npy_float32(kpt3d_path)
-        rendered_3d = 0
-        if shape3d is not None and data3d is not None:
-            for frame_id in target_ids:
+            for variant_name, kpt3d_npy in kpt3d_variant_paths.items():
+                shape3d, data3d = parse_npy_float32(kpt3d_npy)
+                if shape3d is None or data3d is None:
+                    continue
+
                 points3d = reshape_3d_points(shape3d, data3d, frame_id)
                 if not points3d:
                     continue
 
-                title = f"{character}/{action} 3D frame={frame_id:06d}"
+                title = f"{character}/{action}/{camera_id}/{variant_name} 3D frame={frame_id:06d}"
+                out_3d = out_root / variant_name / "3d"
+                out_3d.mkdir(parents=True, exist_ok=True)
                 save_3d_three_views_svg(out_3d / f"kpt3d_{frame_id:06d}_3views.svg", points3d, title)
                 save_3d_perspective_svg(out_3d / f"kpt3d_{frame_id:06d}_perspective.svg", points3d, title)
                 rendered_3d += 1
