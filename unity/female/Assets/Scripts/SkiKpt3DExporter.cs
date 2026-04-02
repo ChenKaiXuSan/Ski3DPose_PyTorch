@@ -5,7 +5,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-public class CharacterKpt3DExporter : MonoBehaviour
+public class SkiKpt3DExporter : MonoBehaviour
 {
     [Header("Output")]
     [Tooltip("Dataset root folder under project root")]
@@ -13,9 +13,6 @@ public class CharacterKpt3DExporter : MonoBehaviour
 
     [Tooltip("Character folder name under SkiDataset")]
     public string characterFolderName = "female";
-
-    [Tooltip("Use GameObject name when characterFolderName is empty")]
-    public bool autoUseTargetNameAsCharacterFolder = true;
 
     [Tooltip("Overwrite existing 3D kpt npy files")]
     public bool overwriteExistingKpt3d = false;
@@ -27,7 +24,7 @@ public class CharacterKpt3DExporter : MonoBehaviour
     public bool exportMergedKpt3d = false;
 
     [Tooltip("Per-frame npy filename prefix")]
-    public string perFrameFilePrefix = "frame";
+    private const string perFrameFilePrefix = "frame";
 
     [Header("Run")]
     public bool autoRunOnPlay = true;
@@ -36,11 +33,27 @@ public class CharacterKpt3DExporter : MonoBehaviour
     [Header("Target")]
     public Animator targetAnimator;
 
-    [Tooltip("Auto scan joints from rootBone")]
-    public bool autoScanAllChildren = true;
+    [Header("Ski Keypoints")]
+    [Tooltip("Export only ski keypoints (6 points: L-Center, L-Front, L-Back, R-Center, R-Front, R-Back)")]
+    public bool autoFindSkiKpts = true;
 
-    public Transform rootBone;
-    public Transform[] joints;
+    [Tooltip("Left ski center")]
+    public Transform skiL_Center;
+
+    [Tooltip("Left ski front")]
+    public Transform skiL_Front;
+
+    [Tooltip("Left ski back")]
+    public Transform skiL_Back;
+
+    [Tooltip("Right ski center")]
+    public Transform skiR_Center;
+
+    [Tooltip("Right ski front")]
+    public Transform skiR_Front;
+
+    [Tooltip("Right ski back")]
+    public Transform skiR_Back;
 
     [Header("Sampling")]
     [Tooltip("Sample every N clip frames")]
@@ -52,14 +65,8 @@ public class CharacterKpt3DExporter : MonoBehaviour
     [Tooltip("Log per-clip summary")]
     public bool logClipSummary = true;
 
-    public bool IsExportStarted { get; private set; }
-    public bool IsExportDone { get; private set; }
-
     IEnumerator Start()
     {
-        IsExportStarted = true;
-        IsExportDone = false;
-
         if (!autoRunOnPlay)
             yield break;
 
@@ -71,35 +78,39 @@ public class CharacterKpt3DExporter : MonoBehaviour
 
         if (targetAnimator == null)
         {
-            Debug.LogError("[CharacterKpt3DExporter] targetAnimator is null.");
+            Debug.LogError("[SkiKpt3DExporter] targetAnimator is null.");
             yield break;
         }
 
-        if (autoScanAllChildren && rootBone != null)
-            ResolveJointsFromRoot();
+        // Auto find ski keypoints if needed
+        if (autoFindSkiKpts)
+            ResolveSkiKpts();
 
-        if (joints == null || joints.Length == 0)
+        // Validate ski keypoints
+        if (skiL_Center == null || skiL_Front == null || skiL_Back == null || 
+            skiR_Center == null || skiR_Front == null || skiR_Back == null)
         {
-            Debug.LogError("[CharacterKpt3DExporter] joints is empty.");
+            Debug.LogError("[SkiKpt3DExporter] One or more ski keypoints are not assigned. " +
+                $"L_Center={skiL_Center}, L_Front={skiL_Front}, L_Back={skiL_Back}, " +
+                $"R_Center={skiR_Center}, R_Front={skiR_Front}, R_Back={skiR_Back}");
             yield break;
         }
 
         var ac = targetAnimator.runtimeAnimatorController;
         if (ac == null)
         {
-            Debug.LogError("[CharacterKpt3DExporter] RuntimeAnimatorController is null.");
+            Debug.LogError("[SkiKpt3DExporter] RuntimeAnimatorController is null.");
             yield break;
         }
 
-        string resolvedCharacter = ResolveCharacterFolder();
         string datasetRoot = Path.Combine(Application.dataPath, "..", "..", outRootFolder);
-        string characterRoot = Path.Combine(datasetRoot, resolvedCharacter);
+        string characterRoot = Path.Combine(datasetRoot, characterFolderName);
         Directory.CreateDirectory(characterRoot);
 
-        var clips = GetUniqueControllerClips(ac);
+        var clips = new List<AnimationClip>(ac.animationClips);
         if (clips.Count == 0)
         {
-            Debug.LogError("[CharacterKpt3DExporter] No clips found in RuntimeAnimatorController.");
+            Debug.LogError("[SkiKpt3DExporter] No clips found in RuntimeAnimatorController.");
             yield break;
         }
 
@@ -117,35 +128,42 @@ public class CharacterKpt3DExporter : MonoBehaviour
         {
             targetAnimator.speed = oldSpeed;
             targetAnimator.enabled = oldEnabled;
-            IsExportDone = true;
         }
 
-        Debug.Log("[CharacterKpt3DExporter] Export finished.");
+        Debug.Log("[SkiKpt3DExporter] Export finished.");
     }
 
-    void ResolveJointsFromRoot()
+    void ResolveSkiKpts()
     {
-        var list = new List<Transform>();
-        var smr = rootBone.GetComponentInChildren<SkinnedMeshRenderer>();
-        if (smr != null && smr.bones != null && smr.bones.Length > 0)
+        // Find ski keypoints by name from the animator's skeleton
+        if (targetAnimator == null)
+            return;
+
+        Transform FindByName(Transform root, string name)
         {
-            list.AddRange(smr.bones);
-        }
-        else
-        {
-            GetAllChildren(rootBone, list);
+            if (root.name == name)
+                return root;
+            foreach (Transform child in root)
+            {
+                var result = FindByName(child, name);
+                if (result != null)
+                    return result;
+            }
+            return null;
         }
 
-        var dedup = new List<Transform>();
-        var seen = new HashSet<Transform>();
-        for (int i = 0; i < list.Count; i++)
-        {
-            var t = list[i];
-            if (t != null && seen.Add(t))
-                dedup.Add(t);
-        }
-
-        joints = dedup.ToArray();
+        if (skiL_Center == null)
+            skiL_Center = FindByName(targetAnimator.transform, "Ski_L_center");
+        if (skiL_Front == null)
+            skiL_Front = FindByName(targetAnimator.transform, "Ski_L_front");
+        if (skiL_Back == null)
+            skiL_Back = FindByName(targetAnimator.transform, "Ski_L_back");
+        if (skiR_Center == null)
+            skiR_Center = FindByName(targetAnimator.transform, "Ski_R_center");
+        if (skiR_Front == null)
+            skiR_Front = FindByName(targetAnimator.transform, "Ski_R_front");
+        if (skiR_Back == null)
+            skiR_Back = FindByName(targetAnimator.transform, "Ski_R_back");
     }
 
     IEnumerator ExportClipKpt3D(string characterRoot, AnimationClip clip, int clipIndex, int clipCount)
@@ -154,9 +172,8 @@ public class CharacterKpt3DExporter : MonoBehaviour
             yield break;
 
         string safeActionName = MakeSafePathName(clip.name);
-        string kpt3dDir = Path.Combine(characterRoot, safeActionName, "kpt3d", "character");
+        string kpt3dDir = Path.Combine(characterRoot, safeActionName, "kpt3d", "ski");
         Directory.CreateDirectory(kpt3dDir);
-
         string kpt3dPath = Path.Combine(kpt3dDir, "kpt3d.npy");
 
         int frameCount = Mathf.Max(1, Mathf.RoundToInt(clip.length * clip.frameRate));
@@ -170,6 +187,7 @@ public class CharacterKpt3DExporter : MonoBehaviour
         if (includeLastFrame && (sampleFrames.Count == 0 || sampleFrames[sampleFrames.Count - 1] != lastFrame))
             sampleFrames.Add(lastFrame);
 
+        var joints = new Transform[] { skiL_Center, skiL_Front, skiL_Back, skiR_Center, skiR_Front, skiR_Back };
         var mergedBuffer = exportMergedKpt3d ? new List<float>(sampleFrames.Count * joints.Length * 3) : null;
         int savedPerFrameCount = 0;
 
@@ -184,12 +202,18 @@ public class CharacterKpt3DExporter : MonoBehaviour
             clip.SampleAnimation(targetAnimator.gameObject, tSec);
 
             var frameBuffer = new List<float>(joints.Length * 3);
-            AppendKpt3DWorldTJC3(frameBuffer);
+            for (int i = 0; i < joints.Length; i++)
+            {
+                var t = joints[i];
+                Vector3 p = t != null ? t.position : Vector3.zero;
+                frameBuffer.Add(p.x);
+                frameBuffer.Add(p.y);
+                frameBuffer.Add(p.z);
+            }
 
             if (exportPerFrameKpt3d)
             {
-                string frameName = string.IsNullOrWhiteSpace(perFrameFilePrefix) ? "frame" : perFrameFilePrefix;
-                string framePath = Path.Combine(kpt3dDir, $"{frameName}_{s:D6}.npy");
+                string framePath = Path.Combine(kpt3dDir, $"{perFrameFilePrefix}_{s:D6}.npy");
                 if (!File.Exists(framePath) || overwriteExistingKpt3d)
                 {
                     WriteFloatNpy(framePath, frameBuffer, joints.Length, 3);
@@ -206,27 +230,15 @@ public class CharacterKpt3DExporter : MonoBehaviour
         }
 
         if (mergedBuffer != null && (!File.Exists(kpt3dPath) || overwriteExistingKpt3d))
-            WriteFloatNpy(kpt3dPath, mergedBuffer, sampleFrames.Count, joints.Length, 3);
+            WriteFloatNpy(kpt3dPath, mergedBuffer, sampleFrames.Count, 6, 3);
 
         if (logClipSummary)
         {
             Debug.Log(
-                $"[CharacterKpt3DExporter] [{clipIndex + 1}/{clipCount}] action={safeActionName}, " +
+                $"[SkiKpt3DExporter] [{clipIndex + 1}/{clipCount}] action={safeActionName}, " +
                 $"clipLen={clip.length:F3}s, clipFps={clip.frameRate:F2}, clipFrames={frameCount}, " +
-                $"sampledFrames={sampleFrames.Count}, joints={joints.Length}, " +
-                $"savedPerFrame={savedPerFrameCount}, merged={(exportMergedKpt3d ? kpt3dPath : "disabled")}");
-        }
-    }
-
-    void AppendKpt3DWorldTJC3(List<float> outBuffer)
-    {
-        for (int i = 0; i < joints.Length; i++)
-        {
-            var t = joints[i];
-            Vector3 p = t != null ? t.position : Vector3.zero;
-            outBuffer.Add(p.x);
-            outBuffer.Add(p.y);
-            outBuffer.Add(p.z);
+                $"sampledFrames={sampleFrames.Count}, savedPerFrame={savedPerFrameCount}, " +
+                $"merged={(exportMergedKpt3d ? "yes" : "no")}");
         }
     }
 
@@ -280,34 +292,6 @@ public class CharacterKpt3DExporter : MonoBehaviour
         }
     }
 
-    List<AnimationClip> GetUniqueControllerClips(RuntimeAnimatorController ac)
-    {
-        var result = new List<AnimationClip>();
-        if (ac == null || ac.animationClips == null)
-            return result;
-
-        var seen = new HashSet<AnimationClip>();
-        for (int i = 0; i < ac.animationClips.Length; i++)
-        {
-            var clip = ac.animationClips[i];
-            if (clip == null)
-                continue;
-            if (seen.Add(clip))
-                result.Add(clip);
-        }
-
-        return result;
-    }
-
-    string ResolveCharacterFolder()
-    {
-        if (!string.IsNullOrWhiteSpace(characterFolderName))
-            return MakeSafePathName(characterFolderName);
-        if (autoUseTargetNameAsCharacterFolder)
-            return MakeSafePathName(gameObject.name);
-        return "UnknownCharacter";
-    }
-
     string MakeSafePathName(string name)
     {
         string safe = string.IsNullOrWhiteSpace(name) ? "UnknownAction" : name;
@@ -315,14 +299,5 @@ public class CharacterKpt3DExporter : MonoBehaviour
         for (int i = 0; i < invalid.Length; i++)
             safe = safe.Replace(invalid[i], '_');
         return safe;
-    }
-
-    void GetAllChildren(Transform t, List<Transform> list)
-    {
-        foreach (Transform c in t)
-        {
-            list.Add(c);
-            GetAllChildren(c, list);
-        }
     }
 }
