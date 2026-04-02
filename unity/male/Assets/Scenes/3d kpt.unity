@@ -122,7 +122,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!1 &401502150
+--- !u!1 &411495160
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -130,133 +130,71 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 401502153}
-  - component: {fileID: 401502152}
-  - component: {fileID: 401502151}
-  - component: {fileID: 401502154}
+  - component: {fileID: 411495162}
+  - component: {fileID: 411495161}
   m_Layer: 0
-  m_Name: left camera
-  m_TagString: left_camera
+  m_Name: camera
+  m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!81 &401502151
-AudioListener:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 401502150}
-  m_Enabled: 0
---- !u!20 &401502152
-Camera:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 401502150}
-  m_Enabled: 1
-  serializedVersion: 2
-  m_ClearFlags: 2
-  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
-  m_projectionMatrixMode: 1
-  m_GateFitMode: 2
-  m_FOVAxisMode: 0
-  m_Iso: 200
-  m_ShutterSpeed: 0.005
-  m_Aperture: 16
-  m_FocusDistance: 10
-  m_FocalLength: 50
-  m_BladeCount: 5
-  m_Curvature: {x: 2, y: 11}
-  m_BarrelClipping: 0.25
-  m_Anamorphism: 0
-  m_SensorSize: {x: 36, y: 24}
-  m_LensShift: {x: 0, y: 0}
-  m_NormalizedViewPortRect:
-    serializedVersion: 2
-    x: 0
-    y: 0
-    width: 1
-    height: 1
-  near clip plane: 0.3
-  far clip plane: 1000
-  field of view: 70
-  orthographic: 0
-  orthographic size: 5
-  m_Depth: -1
-  m_CullingMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  m_RenderingPath: -1
-  m_TargetTexture: {fileID: 0}
-  m_TargetDisplay: 2
-  m_TargetEye: 3
-  m_HDR: 1
-  m_AllowMSAA: 1
-  m_AllowDynamicResolution: 0
-  m_ForceIntoRT: 0
-  m_OcclusionCulling: 1
-  m_StereoConvergence: 10
-  m_StereoSeparation: 0.022
---- !u!4 &401502153
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 401502150}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0.7071068, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: -3, y: 1, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 90, z: 0}
---- !u!114 &401502154
+--- !u!114 &411495161
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 401502150}
-  m_Enabled: 0
+  m_GameObject: {fileID: 411495160}
+  m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 64a5dbdc307c0bf409586f90dcb30fd5, type: 3}
+  m_Script: {fileID: 11500000, guid: 18d9b3da2742a554bba6f5f4b8d53da6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  manualStepAnimator: 1
-  poseStepSec: 30
-  animatorLayer: 0
-  pivotFollowsTargetXZ: 1
-  autoRunOnPlay: 1
-  startDelaySec: 0.2
-  maxFrames: 1
-  warmupFramesPerFrame: 0
-  target: {fileID: 2030730313}
-  lookAtOffset: {x: 0, y: 0, z: 0}
-  orbitAxis: {x: 0, y: 0, z: 0}
-  stepAngleDeg: 90
-  steps: 36
+  target: {fileID: 781862816}
   targetAnimator: {fileID: 2030730308}
-  freezeAnimatorDuringCapture: 1
-  autoScanAllChildren: 1
   rootBone: {fileID: 781862816}
-  joints: []
-  cam: {fileID: 401502152}
-  captureWidth: 1920
-  captureHeight: 1080
-  flipYToTopLeft: 1
-  flipX: 0
-  outRootFolder: RecordingsPose
-  captureFolderPrefix: capture
-  imagePrefix: frame
-  kptPrefix: kpt2d
-  appendTimestampToCaptureFolder: 1
-  stepByNormalizedTime: 1
-  animationSampleFrames: 10
+  waistCenter: {fileID: 0}
+  autoUseAnimatorHips: 1
+  jointsOverride: []
+  preferSkinnedMeshBones: 1
+  radius: 3
+  pitchAngles:
+  - -45
+  - -20
+  - 0
+  - 20
+  - 45
+  stepDeg: 10
+  lookAtOffset: {x: 0, y: 0, z: 0}
+  fov: 60
+  nearClip: 0.3
+  farClip: 1000
+  targetDisplay: 1
+  cameraDepth: -1
+  attachCaptureScript: 1
+  autoRunOnPlay: 1
+  outRootFolder: SkiDataset
+  subjectId: male
+  actionId: A001
+  outputPerCameraSubfolder: 1
+  parentName: CameraRing
+  clearExisting: 1
+--- !u!4 &411495162
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 411495160}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: -0.7071068, z: 0, w: 0.7071068}
+  m_LocalPosition: {x: 3, y: 1, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: -90, z: 0}
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0
@@ -445,7 +383,7 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 8325517911461594592, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
   m_PrefabInstance: {fileID: 1822871698}
   m_PrefabAsset: {fileID: 0}
---- !u!1 &963194225
+--- !u!1 &1107003256
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -453,90 +391,111 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 963194228}
-  - component: {fileID: 963194227}
-  - component: {fileID: 963194226}
+  - component: {fileID: 1107003257}
   m_Layer: 0
-  m_Name: right camera
-  m_TagString: right_camera
+  m_Name: Ski_L_back
+  m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!81 &963194226
-AudioListener:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 963194225}
-  m_Enabled: 0
---- !u!20 &963194227
-Camera:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 963194225}
-  m_Enabled: 1
-  serializedVersion: 2
-  m_ClearFlags: 2
-  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
-  m_projectionMatrixMode: 1
-  m_GateFitMode: 2
-  m_FOVAxisMode: 0
-  m_Iso: 200
-  m_ShutterSpeed: 0.005
-  m_Aperture: 16
-  m_FocusDistance: 10
-  m_FocalLength: 50
-  m_BladeCount: 5
-  m_Curvature: {x: 2, y: 11}
-  m_BarrelClipping: 0.25
-  m_Anamorphism: 0
-  m_SensorSize: {x: 36, y: 24}
-  m_LensShift: {x: 0, y: 0}
-  m_NormalizedViewPortRect:
-    serializedVersion: 2
-    x: 0
-    y: 0
-    width: 1
-    height: 1
-  near clip plane: 0.3
-  far clip plane: 1000
-  field of view: 70
-  orthographic: 0
-  orthographic size: 5
-  m_Depth: -1
-  m_CullingMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  m_RenderingPath: -1
-  m_TargetTexture: {fileID: 0}
-  m_TargetDisplay: 1
-  m_TargetEye: 3
-  m_HDR: 1
-  m_AllowMSAA: 1
-  m_AllowDynamicResolution: 0
-  m_ForceIntoRT: 0
-  m_OcclusionCulling: 1
-  m_StereoConvergence: 10
-  m_StereoSeparation: 0.022
---- !u!4 &963194228
+--- !u!4 &1107003257
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 963194225}
+  m_GameObject: {fileID: 1107003256}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: -0.7071068, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: 3, y: 1, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalRotation: {x: 0.70696133, y: -0.014342573, z: 0.7069613, w: -0.0143415}
+  m_LocalPosition: {x: -0.092, y: -0.65, z: -0.03}
+  m_LocalScale: {x: 1.0000001, y: 0.99999994, z: 0.99999994}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: -90, z: 0}
+  m_Father: {fileID: 1176330700}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!4 &1176330700 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: -7317286187265595320, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+  m_PrefabInstance: {fileID: 1822871698}
+  m_PrefabAsset: {fileID: 0}
+--- !u!4 &1190279037 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 4345388576988011558, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+  m_PrefabInstance: {fileID: 1822871698}
+  m_PrefabAsset: {fileID: 0}
+--- !u!4 &1431357856 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 6883968361000886537, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+  m_PrefabInstance: {fileID: 1822871698}
+  m_PrefabAsset: {fileID: 0}
+--- !u!4 &1535276951 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 7665398597399075743, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+  m_PrefabInstance: {fileID: 1822871698}
+  m_PrefabAsset: {fileID: 0}
+--- !u!1 &1544718159
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1544718160}
+  m_Layer: 0
+  m_Name: Ski_R_back
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1544718160
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1544718159}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.70696133, y: 0.014341138, z: 0.70696133, w: 0.014340992}
+  m_LocalPosition: {x: -0.092, y: -0.65, z: 0.004}
+  m_LocalScale: {x: 1, y: 1.0000004, z: 1.0000001}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1431357856}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1720614938
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1720614939}
+  m_Layer: 0
+  m_Name: Ski_R_front
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1720614939
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1720614938}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.70696133, y: 0.014341138, z: 0.70696133, w: 0.014340992}
+  m_LocalPosition: {x: -0.092, y: 0.9, z: -0.07}
+  m_LocalScale: {x: 1, y: 1.0000004, z: 1.0000001}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1431357856}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1822871698
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -585,6 +544,22 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: -6699407641186973607, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_Name
+      value: Pole_L_Handle
+      objectReference: {fileID: 0}
+    - target: {fileID: -5743209500865850778, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_Name
+      value: Ski_R_center
+      objectReference: {fileID: 0}
+    - target: {fileID: -5437120683222979398, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_Name
+      value: Ski_L_center
+      objectReference: {fileID: 0}
+    - target: {fileID: 855253742217057622, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_Name
+      value: Pole_R_Handle
+      objectReference: {fileID: 0}
     - target: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       propertyPath: m_Name
       value: SK_Male_Skier_A-Pose
@@ -596,25 +571,116 @@ PrefabInstance:
     - target: {fileID: 5866666021909216657, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       propertyPath: m_Controller
       value: 
-      objectReference: {fileID: 9100000, guid: 8f6481b49dc403944bb071b9c7c72170, type: 2}
+      objectReference: {fileID: 9100000, guid: 73ac7610766b96e45a15752292ad391a, type: 2}
+    - target: {fileID: 5866666021909216657, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_UpdateMode
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 5866666021909216657, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      propertyPath: m_CullingMode
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 5866666021909216657, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       propertyPath: m_ApplyRootMotion
       value: 1
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
-    m_AddedGameObjects: []
-    m_AddedComponents:
-    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+    m_AddedGameObjects:
+    - targetCorrespondingSourceObject: {fileID: 4345388576988011558, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: 1
+      addedObject: {fileID: 2088218468}
+    - targetCorrespondingSourceObject: {fileID: 7665398597399075743, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: 1
+      addedObject: {fileID: 1897772167}
+    - targetCorrespondingSourceObject: {fileID: -7317286187265595320, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       insertIndex: -1
-      addedObject: {fileID: 2030730310}
+      addedObject: {fileID: 1860991834}
+    - targetCorrespondingSourceObject: {fileID: -7317286187265595320, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1107003257}
+    - targetCorrespondingSourceObject: {fileID: 6883968361000886537, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1720614939}
+    - targetCorrespondingSourceObject: {fileID: 6883968361000886537, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1544718160}
+    m_AddedComponents:
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       insertIndex: -1
       addedObject: {fileID: 2030730312}
     - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
       insertIndex: -1
       addedObject: {fileID: 2030730314}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 2030730316}
+    - targetCorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 2030730315}
   m_SourcePrefab: {fileID: 100100000, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
+--- !u!1 &1860991833
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1860991834}
+  m_Layer: 0
+  m_Name: Ski_L_front
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1860991834
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1860991833}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.70696133, y: -0.014342573, z: 0.7069613, w: -0.0143415}
+  m_LocalPosition: {x: -0.092, y: 0.9, z: 0.033}
+  m_LocalScale: {x: 1.0000001, y: 0.99999994, z: 0.99999994}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1176330700}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1897772166
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1897772167}
+  m_Layer: 0
+  m_Name: Pole_R_Tip
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1897772167
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1897772166}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0.21756285, y: 0.6887107, z: -0.64662206, w: 0.24540581}
+  m_LocalPosition: {x: -0.068, y: 0.1, z: -0.989}
+  m_LocalScale: {x: 1.0000001, y: 0.99999994, z: 0.9999998}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1535276951}
+  m_LocalEulerAnglesHint: {x: 51.618, y: 94, z: -83.611}
 --- !u!1 &2030730307 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
@@ -625,25 +691,6 @@ Animator:
   m_CorrespondingSourceObject: {fileID: 5866666021909216657, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
   m_PrefabInstance: {fileID: 1822871698}
   m_PrefabAsset: {fileID: 0}
---- !u!114 &2030730310
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2030730307}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 6bf5f17124c2c7545888184d055850bd, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  autoScanFromMesh: 1
-  rootBone: {fileID: 781862816}
-  joints: []
-  animator: {fileID: 0}
-  animatorLayer: 0
-  outputFileName: male_pose3d.json
-  recordOnPlay: 1
 --- !u!114 &2030730312
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -658,16 +705,19 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   animator: {fileID: 2030730308}
   layer: 0
-  stateName: 
-  stopTimeScaleOnFinish: 0
+  stateName: male
+  stopTimeScaleOnFinish: 1
   exitPlayModeInEditor: 1
-  quitAppInBuild: 0
+  quitAppInBuild: 1
   extraFramesAfterFinish: 0
---- !u!4 &2030730313 stripped
-Transform:
-  m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: e1a6cc7340f64714892d83c0e23f028b, type: 3}
-  m_PrefabInstance: {fileID: 1822871698}
-  m_PrefabAsset: {fileID: 0}
+  useAnimationFinishedCondition: 0
+  allowExitWhenCapturesDone: 1
+  forceExitTimeoutSec: 30
+  forceExitEvenIfCapturesPending: 0
+  waitAllCapturesDone: 1
+  autoFindCaptureFrames: 1
+  logCaptureParticipation: 1
+  captureFrames: []
 --- !u!114 &2030730314
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -677,44 +727,119 @@ MonoBehaviour:
   m_GameObject: {fileID: 2030730307}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 64a5dbdc307c0bf409586f90dcb30fd5, type: 3}
+  m_Script: {fileID: 11500000, guid: 9cd234fc9a3c9481a8d1a0a5a37e8a32, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  manualStepAnimator: 1
-  poseStepSec: 60
-  animatorLayer: 0
-  pivotFollowsTargetXZ: 1
+  outRootFolder: SkiDataset
+  characterFolderName: male
+  autoUseTargetNameAsCharacterFolder: 1
+  overwriteExistingKpt3d: 0
+  exportPerFrameKpt3d: 1
+  exportMergedKpt3d: 0
+  perFrameFilePrefix: frame
   autoRunOnPlay: 1
   startDelaySec: 0
-  maxFrames: -1
-  warmupFramesPerFrame: 0
-  target: {fileID: 781862816}
-  lookAtOffset: {x: 0, y: 0, z: 0}
-  orbitAxis: {x: 0, y: 0, z: 0}
-  stepAngleDeg: 180
-  steps: 1
   targetAnimator: {fileID: 2030730308}
-  freezeAnimatorDuringCapture: 0
   autoScanAllChildren: 1
   rootBone: {fileID: 781862816}
   joints: []
-  cam: {fileID: 401502152}
-  captureWidth: 1920
-  captureHeight: 1080
-  flipYToTopLeft: 1
-  flipX: 0
-  outRootFolder: RecordingsPose
-  captureFolderPrefix: capture
-  imagePrefix: frame
-  kptPrefix: kpt2d
-  appendTimestampToCaptureFolder: 1
-  stepByNormalizedTime: 1
-  animationSampleFrames: 1
+  poseEveryNFrames: 1
+  includeLastFrame: 1
+  logClipSummary: 1
+--- !u!114 &2030730315
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2030730307}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: adab80a9834194cdcb9537e844d3f56a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  outRootFolder: SkiDataset
+  characterFolderName: male
+  overwriteExistingKpt3d: 0
+  exportPerFrameKpt3d: 1
+  exportMergedKpt3d: 0
+  autoRunOnPlay: 1
+  startDelaySec: 0
+  targetAnimator: {fileID: 2030730308}
+  autoFindSkiKpts: 1
+  skiL_Center: {fileID: 0}
+  skiL_Front: {fileID: 0}
+  skiL_Back: {fileID: 0}
+  skiR_Center: {fileID: 0}
+  skiR_Front: {fileID: 0}
+  skiR_Back: {fileID: 0}
+  poseEveryNFrames: 1
+  includeLastFrame: 1
+  logClipSummary: 1
+--- !u!114 &2030730316
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2030730307}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ddad08f1f044540059e3e3ff1ccc5836, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  outRootFolder: SkiDataset
+  characterFolderName: male
+  autoUseTargetNameAsCharacterFolder: 1
+  overwriteExistingKpt3d: 0
+  exportPerFrameKpt3d: 1
+  exportMergedKpt3d: 0
+  autoRunOnPlay: 1
+  startDelaySec: 0
+  targetAnimator: {fileID: 2030730308}
+  autoFindPoleKpts: 1
+  poleL_Handle: {fileID: 0}
+  poleL_Tip: {fileID: 0}
+  poleR_Handle: {fileID: 0}
+  poleR_Tip: {fileID: 0}
+  poseEveryNFrames: 1
+  includeLastFrame: 1
+  logClipSummary: 1
+--- !u!1 &2088218467
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2088218468}
+  m_Layer: 0
+  m_Name: Pole_L_Tip
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2088218468
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2088218467}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.6602233, y: 0.2928501, z: 0.17192677, w: 0.66991436}
+  m_LocalPosition: {x: -0.052, y: 0.1, z: 0.986}
+  m_LocalScale: {x: 1, y: 1, z: 0.99999994}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1190279037}
+  m_LocalEulerAnglesHint: {x: 51.618, y: 94, z: 83.611}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 963194228}
-  - {fileID: 401502153}
   - {fileID: 705507995}
   - {fileID: 1822871698}
+  - {fileID: 411495162}
