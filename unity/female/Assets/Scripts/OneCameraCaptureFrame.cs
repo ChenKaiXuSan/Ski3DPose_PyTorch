@@ -97,6 +97,16 @@ namespace PoseRecord.Data
 
 public class OneCameraCaptureFrame : MonoBehaviour
 {
+    static readonly string[] PoleJointNames = new string[]
+    {
+        "Pole_L_Handle", "Pole_L_Tip", "Pole_R_Handle", "Pole_R_Tip"
+    };
+
+    static readonly string[] SkiJointNames = new string[]
+    {
+        "Ski_L_center", "Ski_L_front", "Ski_L_back", "Ski_R_center", "Ski_R_front", "Ski_R_back"
+    };
+
     static class GlobalFrameSync
     {
         public static int expectedParticipants = 1;
@@ -164,9 +174,22 @@ public class OneCameraCaptureFrame : MonoBehaviour
         public string cameraFolder;
         public string imageFolder;
         public string vizFolder;
+        public string vizCharacterFolder;
+        public string vizPoleFolder;
+        public string vizSkiFolder;
         public string kpt2dFolder;
-        public string kpt2dPath;
-        public List<float> kpt2dBuffer;
+        public string kpt2dCharacterPath;
+        public string kpt2dPolePath;
+        public string kpt2dSkiPath;
+        public string kpt2dCharacterFolder;
+        public string kpt2dPoleFolder;
+        public string kpt2dSkiFolder;
+        public List<float> kpt2dCharacterBuffer;
+        public List<float> kpt2dPoleBuffer;
+        public List<float> kpt2dSkiBuffer;
+        public int characterJointCount;
+        public int poleJointCount;
+        public int skiJointCount;
         public int totalFrames;
         public int sampledFrames;
     }
@@ -473,6 +496,15 @@ public class OneCameraCaptureFrame : MonoBehaviour
 
         int expectedSamples = Mathf.CeilToInt(totalFrames / (float)stride);
         if ((totalFrames - 1) % stride != 0) expectedSamples += 1;
+        int[] characterIndices = BuildAllJointIndices();
+        int[] poleIndices = FindJointIndicesByExactNames(PoleJointNames);
+        int[] skiIndices = FindJointIndicesByExactNames(SkiJointNames);
+
+        if (poleIndices.Length != PoleJointNames.Length)
+            LogWarning($"[OneCameraCaptureFrame] Pole subset resolved {poleIndices.Length}/{PoleJointNames.Length}. Check pole joint names.");
+        if (skiIndices.Length != SkiJointNames.Length)
+            LogWarning($"[OneCameraCaptureFrame] Ski subset resolved {skiIndices.Length}/{SkiJointNames.Length}. Check ski joint names.");
+
         var actionStates = new Dictionary<string, ActionCaptureState>();
 
         ActionCaptureState EnsureActionState(string safeActionName)
@@ -484,13 +516,28 @@ public class OneCameraCaptureFrame : MonoBehaviour
             string cameraFolder = Path.Combine(actionRoot, "cameras", cameraId);
             string imageFolder = Path.Combine(actionRoot, "frames", captureFolderName);
             string vizFolder = Path.Combine(actionRoot, "viz", captureFolderName);
+            string vizCharacterFolder = Path.Combine(vizFolder, "character");
+            string vizPoleFolder = Path.Combine(vizFolder, "pole");
+            string vizSkiFolder = Path.Combine(vizFolder, "ski");
             string kpt2dFolder = Path.Combine(actionRoot, "kpt2d", safeCameraIdForKpt2d);
-            string kpt2dPath = Path.Combine(kpt2dFolder, kpt2dFileName);
+            string kpt2dCharacterFolder = Path.Combine(kpt2dFolder, "character");
+            string kpt2dPoleFolder = Path.Combine(kpt2dFolder, "pole");
+            string kpt2dSkiFolder = Path.Combine(kpt2dFolder, "ski");
+            string kpt2dCharacterPath = Path.Combine(kpt2dCharacterFolder, kpt2dFileName);
+            string kpt2dPolePath = Path.Combine(kpt2dPoleFolder, kpt2dFileName);
+            string kpt2dSkiPath = Path.Combine(kpt2dSkiFolder, kpt2dFileName);
 
             Directory.CreateDirectory(metaFolder);
             Directory.CreateDirectory(imageFolder);
-            if (exportKpt2dOverlayImage) Directory.CreateDirectory(vizFolder);
-            Directory.CreateDirectory(kpt2dFolder);
+            if (exportKpt2dOverlayImage)
+            {
+                Directory.CreateDirectory(vizCharacterFolder);
+                Directory.CreateDirectory(vizPoleFolder);
+                Directory.CreateDirectory(vizSkiFolder);
+            }
+            Directory.CreateDirectory(kpt2dCharacterFolder);
+            Directory.CreateDirectory(kpt2dPoleFolder);
+            Directory.CreateDirectory(kpt2dSkiFolder);
 
             if (!saveCameraMetaOnlyOnce)
             {
@@ -507,16 +554,29 @@ public class OneCameraCaptureFrame : MonoBehaviour
                 cameraFolder = cameraFolder,
                 imageFolder = imageFolder,
                 vizFolder = vizFolder,
+                vizCharacterFolder = vizCharacterFolder,
+                vizPoleFolder = vizPoleFolder,
+                vizSkiFolder = vizSkiFolder,
                 kpt2dFolder = kpt2dFolder,
-                kpt2dPath = kpt2dPath,
-                kpt2dBuffer = new List<float>(expectedSamples * joints.Length * 3),
+                kpt2dCharacterPath = kpt2dCharacterPath,
+                kpt2dPolePath = kpt2dPolePath,
+                kpt2dSkiPath = kpt2dSkiPath,
+                kpt2dCharacterFolder = kpt2dCharacterFolder,
+                kpt2dPoleFolder = kpt2dPoleFolder,
+                kpt2dSkiFolder = kpt2dSkiFolder,
+                kpt2dCharacterBuffer = new List<float>(expectedSamples * Mathf.Max(1, characterIndices.Length) * 3),
+                kpt2dPoleBuffer = new List<float>(expectedSamples * Mathf.Max(1, poleIndices.Length) * 3),
+                kpt2dSkiBuffer = new List<float>(expectedSamples * Mathf.Max(1, skiIndices.Length) * 3),
+                characterJointCount = characterIndices.Length,
+                poleJointCount = poleIndices.Length,
+                skiJointCount = skiIndices.Length,
                 totalFrames = actionTotalFrames.TryGetValue(safeActionName, out var tf) ? tf : 0,
                 sampledFrames = 0,
             };
 
             WriteSequenceMeta(Path.Combine(metaFolder, "sequence.json"), safeActionName, state.totalFrames, 0, stride);
             if (exportJointNamesMeta)
-                WriteJointNamesMeta(Path.Combine(metaFolder, "joint_names.json"));
+                WriteJointNamesMetaBySubset(metaFolder, characterIndices, poleIndices, skiIndices);
             actionStates.Add(safeActionName, state);
 
             LogInfo($"[OneCameraCaptureFrame] Output camera folder: {imageFolder}");
@@ -545,12 +605,21 @@ public class OneCameraCaptureFrame : MonoBehaviour
                 sampleIdx,
                 state.sampledFrames,
                 state.imageFolder,
-                state.vizFolder,
+                state.vizCharacterFolder,
+                state.vizPoleFolder,
+                state.vizSkiFolder,
                 imagePrefix,
-                state.kpt2dFolder,
-                kptPrefix,       // 新增
+                kptPrefix,
                 rec,
-                state.kpt2dBuffer
+                state.kpt2dCharacterFolder,
+                state.kpt2dPoleFolder,
+                state.kpt2dSkiFolder,
+                state.kpt2dCharacterBuffer,
+                state.kpt2dPoleBuffer,
+                state.kpt2dSkiBuffer,
+                characterIndices,
+                poleIndices,
+                skiIndices
             ));
 
             state.sampledFrames++;
@@ -584,12 +653,21 @@ public class OneCameraCaptureFrame : MonoBehaviour
                 lastFrameIdx,
                 state.sampledFrames,
                 state.imageFolder,
-                state.vizFolder,
+                state.vizCharacterFolder,
+                state.vizPoleFolder,
+                state.vizSkiFolder,
                 imagePrefix,
-                state.kpt2dFolder,
                 kptPrefix,
                 rec,
-                state.kpt2dBuffer
+                state.kpt2dCharacterFolder,
+                state.kpt2dPoleFolder,
+                state.kpt2dSkiFolder,
+                state.kpt2dCharacterBuffer,
+                state.kpt2dPoleBuffer,
+                state.kpt2dSkiBuffer,
+                characterIndices,
+                poleIndices,
+                skiIndices
             ));
 
             state.sampledFrames++;
@@ -606,7 +684,12 @@ public class OneCameraCaptureFrame : MonoBehaviour
         foreach (var kv in actionStates)
         {
             var state = kv.Value;
-            WriteKpt2DNpy(state.kpt2dPath, state.kpt2dBuffer, state.sampledFrames, joints.Length);
+            if (state.characterJointCount > 0)
+                WriteKpt2DNpy(state.kpt2dCharacterPath, state.kpt2dCharacterBuffer, state.sampledFrames, state.characterJointCount);
+            if (state.poleJointCount > 0)
+                WriteKpt2DNpy(state.kpt2dPolePath, state.kpt2dPoleBuffer, state.sampledFrames, state.poleJointCount);
+            if (state.skiJointCount > 0)
+                WriteKpt2DNpy(state.kpt2dSkiPath, state.kpt2dSkiBuffer, state.sampledFrames, state.skiJointCount);
 
             WriteSequenceMeta(Path.Combine(state.metaFolder, "sequence.json"), state.actionName, state.totalFrames, state.sampledFrames, stride);
         }
@@ -770,12 +853,21 @@ public class OneCameraCaptureFrame : MonoBehaviour
         int frameIdx,
         int outputFrameIdx,
         string imageFolder,
-        string vizFolder,
+        string vizCharacterFolder,
+        string vizPoleFolder,
+        string vizSkiFolder,
         string imgPrefix,
-        string kpt2dFolder,     // 新增
-        string kptPrefixName,   // 新增
+        string kptPrefixName,
         PoseRecord.Data.Frame2DRecordData rec,
-        List<float> kpt2dBuffer
+        string kpt2dCharacterFolder,
+        string kpt2dPoleFolder,
+        string kpt2dSkiFolder,
+        List<float> kpt2dCharacterBuffer,
+        List<float> kpt2dPoleBuffer,
+        List<float> kpt2dSkiBuffer,
+        int[] characterIndices,
+        int[] poleIndices,
+        int[] skiIndices
     )
     {
         string safeImagePrefix = string.IsNullOrWhiteSpace(imgPrefix) ? "frame" : imgPrefix;
@@ -825,35 +917,71 @@ public class OneCameraCaptureFrame : MonoBehaviour
 
         FillRecord(rec, frameIdx);
 
-        int start = kpt2dBuffer.Count;
-        AppendKeypointsAsPixelTJC3(kpt2dBuffer); // 追加当前帧 joints*3
+        float[] characterFrame = GetKeypointsAsPixelByIndices(characterIndices);
+        float[] poleFrame = GetKeypointsAsPixelByIndices(poleIndices);
+        float[] skiFrame = GetKeypointsAsPixelByIndices(skiIndices);
+
+        AppendFrameToBuffer(kpt2dCharacterBuffer, characterFrame);
+        AppendFrameToBuffer(kpt2dPoleBuffer, poleFrame);
+        AppendFrameToBuffer(kpt2dSkiBuffer, skiFrame);
 
         if (exportKpt2dPerFrame)
         {
-            int count = joints.Length * 3;
-            float[] oneFrame = new float[count];
-            for (int i = 0; i < count; i++) oneFrame[i] = kpt2dBuffer[start + i];
-
             string safeKptPrefix = string.IsNullOrWhiteSpace(kptPrefixName) ? "kpt2d" : kptPrefixName;
-            string perFramePath = Path.Combine(kpt2dFolder, $"{safeKptPrefix}_{outputFrameIdx:000000}.npy");
-            WriteNpyFloat32_2D(perFramePath, oneFrame, joints.Length, 3);
+            if (characterIndices != null && characterIndices.Length > 0)
+            {
+                string perFramePath = Path.Combine(kpt2dCharacterFolder, $"{safeKptPrefix}_{outputFrameIdx:000000}.npy");
+                WriteNpyFloat32_2D(perFramePath, characterFrame, characterIndices.Length, 3);
+            }
+            if (poleIndices != null && poleIndices.Length > 0)
+            {
+                string perFramePath = Path.Combine(kpt2dPoleFolder, $"{safeKptPrefix}_{outputFrameIdx:000000}.npy");
+                WriteNpyFloat32_2D(perFramePath, poleFrame, poleIndices.Length, 3);
+            }
+            if (skiIndices != null && skiIndices.Length > 0)
+            {
+                string perFramePath = Path.Combine(kpt2dSkiFolder, $"{safeKptPrefix}_{outputFrameIdx:000000}.npy");
+                WriteNpyFloat32_2D(perFramePath, skiFrame, skiIndices.Length, 3);
+            }
 
             if (exportKpt2dOverlayImage)
             {
                 string safeVizPrefix = string.IsNullOrWhiteSpace(vizImagePrefix) ? "viz" : vizImagePrefix;
-                string vizPath = Path.Combine(vizFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
-                SaveOverlayVisualization(vizPath, oneFrame, joints.Length);
+                if (characterIndices != null && characterIndices.Length > 0)
+                {
+                    string vizPath = Path.Combine(vizCharacterFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                    SaveOverlayVisualization(vizPath, characterFrame, characterIndices.Length);
+                }
+                if (poleIndices != null && poleIndices.Length > 0)
+                {
+                    string vizPath = Path.Combine(vizPoleFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                    SaveOverlayVisualization(vizPath, poleFrame, poleIndices.Length);
+                }
+                if (skiIndices != null && skiIndices.Length > 0)
+                {
+                    string vizPath = Path.Combine(vizSkiFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                    SaveOverlayVisualization(vizPath, skiFrame, skiIndices.Length);
+                }
             }
         }
         else if (exportKpt2dOverlayImage)
         {
-            int count = joints.Length * 3;
-            float[] oneFrame = new float[count];
-            for (int i = 0; i < count; i++) oneFrame[i] = kpt2dBuffer[start + i];
-
             string safeVizPrefix = string.IsNullOrWhiteSpace(vizImagePrefix) ? "viz" : vizImagePrefix;
-            string vizPath = Path.Combine(vizFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
-            SaveOverlayVisualization(vizPath, oneFrame, joints.Length);
+            if (characterIndices != null && characterIndices.Length > 0)
+            {
+                string vizPath = Path.Combine(vizCharacterFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                SaveOverlayVisualization(vizPath, characterFrame, characterIndices.Length);
+            }
+            if (poleIndices != null && poleIndices.Length > 0)
+            {
+                string vizPath = Path.Combine(vizPoleFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                SaveOverlayVisualization(vizPath, poleFrame, poleIndices.Length);
+            }
+            if (skiIndices != null && skiIndices.Length > 0)
+            {
+                string vizPath = Path.Combine(vizSkiFolder, $"{safeVizPrefix}_{outputFrameIdx:000000}.png");
+                SaveOverlayVisualization(vizPath, skiFrame, skiIndices.Length);
+            }
         }
     }
 
@@ -1001,14 +1129,60 @@ public class OneCameraCaptureFrame : MonoBehaviour
         }
     }
 
-    void AppendKeypointsAsPixelTJC3(List<float> outBuffer)
+    int[] BuildAllJointIndices()
+    {
+        int n = joints != null ? joints.Length : 0;
+        int[] indices = new int[n];
+        for (int i = 0; i < n; i++)
+            indices[i] = i;
+        return indices;
+    }
+
+    int[] FindJointIndicesByExactNames(string[] names)
+    {
+        if (joints == null || names == null || names.Length == 0)
+            return new int[0];
+
+        var indexByName = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < joints.Length; i++)
+        {
+            var j = joints[i];
+            if (j != null && !indexByName.ContainsKey(j.name))
+                indexByName[j.name] = i;
+        }
+
+        var found = new List<int>(names.Length);
+        for (int i = 0; i < names.Length; i++)
+        {
+            if (indexByName.TryGetValue(names[i], out int idx))
+                found.Add(idx);
+        }
+
+        return found.ToArray();
+    }
+
+    float[] GetKeypointsAsPixelByIndices(int[] indices)
     {
         int w = rt != null ? rt.width : captureWidth;
         int h = rt != null ? rt.height : captureHeight;
+        if (indices == null || indices.Length == 0)
+            return new float[0];
 
-        for (int i = 0; i < joints.Length; i++)
+        float[] frame = new float[indices.Length * 3];
+        int o = 0;
+
+        for (int i = 0; i < indices.Length; i++)
         {
-            Vector3 vp = cam.WorldToViewportPoint(joints[i].position);
+            int jointIdx = indices[i];
+            if (jointIdx < 0 || jointIdx >= joints.Length || joints[jointIdx] == null)
+            {
+                frame[o++] = 0f;
+                frame[o++] = 0f;
+                frame[o++] = 0f;
+                continue;
+            }
+
+            Vector3 vp = cam.WorldToViewportPoint(joints[jointIdx].position);
             float conf = (vp.z > 0 && vp.x >= 0 && vp.x <= 1 && vp.y >= 0 && vp.y <= 1) ? 1f : 0f;
 
             float x01 = flipX ? 1f - vp.x : vp.x;
@@ -1017,10 +1191,20 @@ public class OneCameraCaptureFrame : MonoBehaviour
             float x = x01 * (w - 1);
             float y = y01 * (h - 1);
 
-            outBuffer.Add(x);
-            outBuffer.Add(y);
-            outBuffer.Add(conf);
+            frame[o++] = x;
+            frame[o++] = y;
+            frame[o++] = conf;
         }
+
+        return frame;
+    }
+
+    void AppendFrameToBuffer(List<float> outBuffer, float[] frame)
+    {
+        if (outBuffer == null || frame == null || frame.Length == 0)
+            return;
+        for (int i = 0; i < frame.Length; i++)
+            outBuffer.Add(frame[i]);
     }
 
     void WriteSequenceMeta(string path, string actionName, int totalFrames, int sampledFrames, int stride)
@@ -1043,13 +1227,20 @@ public class OneCameraCaptureFrame : MonoBehaviour
         File.WriteAllText(path, JsonUtility.ToJson(seq, true), Encoding.UTF8);
     }
 
-    void WriteJointNamesMeta(string path)
+    void WriteJointNamesMetaBySubset(string metaFolder, int[] characterIndices, int[] poleIndices, int[] skiIndices)
     {
-        if (joints == null || joints.Length == 0) return;
+        WriteJointNamesMeta(Path.Combine(metaFolder, "joint_names_character.json"), characterIndices);
+        WriteJointNamesMeta(Path.Combine(metaFolder, "joint_names_pole.json"), poleIndices);
+        WriteJointNamesMeta(Path.Combine(metaFolder, "joint_names_ski.json"), skiIndices);
 
-        var names = new string[joints.Length];
-        for (int i = 0; i < joints.Length; i++)
-            names[i] = joints[i] != null ? joints[i].name : $"joint_{i}";
+        // Keep legacy filename for compatibility with existing tools.
+        WriteJointNamesMeta(Path.Combine(metaFolder, "joint_names.json"), characterIndices);
+    }
+
+    void WriteJointNamesMeta(string path, int[] indices)
+    {
+        var names = ResolveJointNamesByIndices(indices);
+        if (names == null || names.Length == 0) return;
 
         var data = new PoseRecord.Data.JointNamesData
         {
@@ -1057,6 +1248,24 @@ public class OneCameraCaptureFrame : MonoBehaviour
         };
 
         File.WriteAllText(path, JsonUtility.ToJson(data, true), Encoding.UTF8);
+    }
+
+    string[] ResolveJointNamesByIndices(int[] indices)
+    {
+        if (joints == null || joints.Length == 0 || indices == null || indices.Length == 0)
+            return new string[0];
+
+        var names = new string[indices.Length];
+        for (int i = 0; i < indices.Length; i++)
+        {
+            int idx = indices[i];
+            if (idx >= 0 && idx < joints.Length && joints[idx] != null)
+                names[i] = joints[idx].name;
+            else
+                names[i] = $"joint_{idx}";
+        }
+
+        return names;
     }
 
     string ResolveActionFolderName(AnimationClip captureClip)

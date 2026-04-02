@@ -227,7 +227,7 @@ MonoBehaviour:
   - 0
   - 20
   - 45
-  stepDeg: 10
+  stepDeg: 180
   lookAtOffset: {x: 0, y: 0, z: 0}
   fov: 60
   nearClip: 0.3
@@ -741,14 +741,9 @@ MonoBehaviour:
   overwriteExistingKpt3d: 0
   exportPerFrameKpt3d: 1
   exportMergedKpt3d: 0
-  perFrameFilePrefix: frame
   autoRunOnPlay: 1
   startDelaySec: 0
   targetAnimator: {fileID: 2030730308}
-  autoScanAllChildren: 1
-  rootBone: {fileID: 781862816}
-  joints: []
-  exportOnlyPoleKpts: 1
   autoFindPoleKpts: 1
   poleL_Handle: {fileID: 0}
   poleL_Tip: {fileID: 0}
@@ -771,18 +766,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   outRootFolder: SkiDataset
   characterFolderName: female
-  autoUseTargetNameAsCharacterFolder: 1
   overwriteExistingKpt3d: 0
   exportPerFrameKpt3d: 1
   exportMergedKpt3d: 0
-  perFrameFilePrefix: frame
   autoRunOnPlay: 1
   startDelaySec: 0
   targetAnimator: {fileID: 2030730308}
-  autoScanAllChildren: 1
-  rootBone: {fileID: 781862816}
-  joints: []
-  exportOnlySkiKpts: 1
   autoFindSkiKpts: 1
   skiL_Center: {fileID: 0}
   skiL_Front: {fileID: 0}
