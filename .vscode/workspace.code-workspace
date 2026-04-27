@@ -12,14 +12,6 @@
 			"name": "reference",
 			"path": "/workspace/code"
 		},
-		{
-			"name": "Drive_Face_Mesh_PyTorch",
-			"path": "/workspace/Drive_Face_Mesh_PyTorch"
-		},
-		{
-			"name": "MultiView_DriverAction_PyTorch",
-			"path": "/workspace/MultiView_DriverAction_PyTorch"
-		}
 	],
 	"settings": {
 		"python-envs.pythonProjects": [

@@ -53,6 +53,29 @@ from project.trainer.train_fusion_SSM import FusionSSMTrainer
 logger = logging.getLogger(__name__)
 
 
+def _select_variant_dir_from_item(
+    item: Dict[str, object],
+    direct_key: str,
+    dirs_key: str,
+    preferred_variant: str = "character",
+) -> str:
+    direct_value = item.get(direct_key)
+    if direct_value:
+        return str(direct_value)
+
+    variant_dirs = item.get(dirs_key)
+    if isinstance(variant_dirs, dict):
+        if preferred_variant in variant_dirs:
+            return str(variant_dirs[preferred_variant])
+        if variant_dirs:
+            first_key = sorted(str(k) for k in variant_dirs.keys())[0]
+            return str(variant_dirs[first_key])
+
+    raise KeyError(
+        f"Missing both '{direct_key}' and usable '{dirs_key}' in index item."
+    )
+
+
 def _resolve_trainer_requirements(hparams: DictConfig) -> Dict[str, object]:
     """Infer required input modalities from current trainer selection."""
     backbone = str(hparams.model.backbone)
@@ -139,26 +162,36 @@ def load_fold_dataset_idx_from_fold_json(
         src_list = fold_data.get(split, [])
 
         for item in src_list:
+            cam1_kpt2d_dir = _select_variant_dir_from_item(
+                item, "cam1_kpt2d_dir", "cam1_kpt2d_dirs"
+            )
+            cam2_kpt2d_dir = _select_variant_dir_from_item(
+                item, "cam2_kpt2d_dir", "cam2_kpt2d_dirs"
+            )
+            kpt3d_dir = _select_variant_dir_from_item(item, "kpt3d_dir", "kpt3d_dirs")
             dataset_idx[split].append(
                 UnityDataConfig(
                     person_id=item["person_id"],
                     action_id=item["action_id"],
                     cam1_id=item["cam1_id"],
                     cam2_id=item["cam2_id"],
-                    cam1_path=Path(item["cam1_path"]),
-                    cam2_path=Path(item["cam2_path"]),
-                    label_path=Path(item["label_path"]),
-                    cam1_frames_dir=Path(item["cam1_frames_dir"]),
-                    cam2_frames_dir=Path(item["cam2_frames_dir"]),
-                    cam1_kpt2d_dir=Path(item["cam1_kpt2d_dir"]),
-                    cam2_kpt2d_dir=Path(item["cam2_kpt2d_dir"]),
-                    kpt3d_dir=Path(item["kpt3d_dir"]),
+                    cam1_path=str(item["cam1_path"]),
+                    cam2_path=str(item["cam2_path"]),
+                    label_path=str(item["label_path"]),
+                    cam1_frames_dir=str(item["cam1_frames_dir"]),
+                    cam2_frames_dir=str(item["cam2_frames_dir"]),
+                    cam1_kpt2d_dirs=item.get("cam1_kpt2d_dirs"),
+                    cam2_kpt2d_dirs=item.get("cam2_kpt2d_dirs"),
+                    cam1_kpt2d_dir=cam1_kpt2d_dir,
+                    cam2_kpt2d_dir=cam2_kpt2d_dir,
+                    kpt3d_dirs=item.get("kpt3d_dirs"),
+                    kpt3d_dir=kpt3d_dir,
                     sam3d_cam1_kpt2d_dir=str(item["sam3d_cam1_kpt2d_dir"]),
                     sam3d_cam2_kpt2d_dir=str(item["sam3d_cam2_kpt2d_dir"]),
                     sam3d_cam1_kpt3d_dir=str(item["sam3d_cam1_kpt3d_dir"]),
                     sam3d_cam2_kpt3d_dir=str(item["sam3d_cam2_kpt3d_dir"]),
-                    sequence_meta_path=Path(item["sequence_meta_path"]),
-                    joint_names_path=Path(item["joint_names_path"]),
+                    sequence_meta_path=str(item["sequence_meta_path"]),
+                    joint_names_path=str(item["joint_names_path"]),
                 )
             )
 
@@ -236,6 +269,16 @@ def load_fold_dataset_idx_from_index_mapping(config: DictConfig):
                         f"Index item in fold {kfold}/{split} must be dict, got {type(item)}"
                     )
 
+                cam1_kpt2d_dir = _select_variant_dir_from_item(
+                    item, "cam1_kpt2d_dir", "cam1_kpt2d_dirs"
+                )
+                cam2_kpt2d_dir = _select_variant_dir_from_item(
+                    item, "cam2_kpt2d_dir", "cam2_kpt2d_dirs"
+                )
+                kpt3d_dir = _select_variant_dir_from_item(
+                    item, "kpt3d_dir", "kpt3d_dirs"
+                )
+
                 # camera-pair index format: build UnityDataConfig directly.
                 if "cam1_frames_dir" in item and "cam2_frames_dir" in item:
                     required_fields = [
@@ -248,9 +291,6 @@ def load_fold_dataset_idx_from_index_mapping(config: DictConfig):
                         "label_path",
                         "cam1_frames_dir",
                         "cam2_frames_dir",
-                        "cam1_kpt2d_dir",
-                        "cam2_kpt2d_dir",
-                        "kpt3d_dir",
                         "sam3d_cam1_kpt2d_dir",
                         "sam3d_cam2_kpt2d_dir",
                         "sam3d_cam1_kpt3d_dir",
@@ -275,9 +315,12 @@ def load_fold_dataset_idx_from_index_mapping(config: DictConfig):
                             label_path=str(item["label_path"]),
                             cam1_frames_dir=str(item["cam1_frames_dir"]),
                             cam2_frames_dir=str(item["cam2_frames_dir"]),
-                            cam1_kpt2d_dir=str(item["cam1_kpt2d_dir"]),
-                            cam2_kpt2d_dir=str(item["cam2_kpt2d_dir"]),
-                            kpt3d_dir=str(item["kpt3d_dir"]),
+                            cam1_kpt2d_dirs=item.get("cam1_kpt2d_dirs"),
+                            cam2_kpt2d_dirs=item.get("cam2_kpt2d_dirs"),
+                            cam1_kpt2d_dir=cam1_kpt2d_dir,
+                            cam2_kpt2d_dir=cam2_kpt2d_dir,
+                            kpt3d_dirs=item.get("kpt3d_dirs"),
+                            kpt3d_dir=kpt3d_dir,
                             sam3d_cam1_kpt2d_dir=str(item["sam3d_cam1_kpt2d_dir"]),
                             sam3d_cam2_kpt2d_dir=str(item["sam3d_cam2_kpt2d_dir"]),
                             sam3d_cam1_kpt3d_dir=str(item["sam3d_cam1_kpt3d_dir"]),

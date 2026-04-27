@@ -27,7 +27,7 @@ data:
     video_path: ${data.root_path}/raw_data # 暂时不使用kpt
     sam_3d_body_results_path: ${data.root_path}/sam3d_body_results/person # 没有标签的训练数据
   unity:
-    data_path: ${data.root_path}/data
+    data_path: ${data.root_path}/data_pole_ski 
     sam_3d_body_results_path: ${data.root_path}/sam3d_body_results/inference # 有标签的训练数据
 
   index_mapping: ${data.root_path}/index_mapping # precomputed index mapping directory
@@ -37,7 +37,7 @@ data:
 
   num_workers: 32
   img_size: 224
-  load_frames: false # whether to load video frames
+  load_frames: true # whether to load video frames
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
 

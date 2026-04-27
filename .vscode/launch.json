@@ -14,13 +14,20 @@
       // "args": ["--config", "configs/sam3d_body.yaml"]
     },
     {
+      "name": "index_mapping",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "cross_validation.generate_cv_index"
+      // "args": ["--config", "configs/sam3d_hand.yaml"]
+    },
+    {
       "name": "unity_train",
       "type": "debugpy",
       "request": "launch",
       "module": "project.main",
       "python": "/opt/conda/envs/canonical_dualview_3d_pose/bin/python",
       "args": [
-       "data.num_workers=12",
+        "data.num_workers=16",
         "data.batch_size=16",
       ]
     }
