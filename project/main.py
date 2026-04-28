@@ -370,6 +370,10 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     elif hparams.train.view == "single":
         if hparams.model.backbone == "pose2equip":
             classification_module = Pose2EquipTrainer(hparams)
+            # pose2equip 当前验证阶段记录的是 val/mpjpe 与 val/loss。
+            monitor_metric = "val/mpjpe"
+            monitor_mode = "min"
+            ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
     else:
         raise ValueError("the experiment view is not supported.")
 
