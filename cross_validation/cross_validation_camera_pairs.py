@@ -20,6 +20,7 @@ Copyright (c) 2026 The University of Tsukuba
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, asdict, fields
@@ -30,6 +31,7 @@ from sklearn.model_selection import KFold
 
 
 KPT_VARIANTS = ("character", "pole", "ski")
+CAPTURE_NAME_PATTERN = re.compile(r"^capture_L(\d+)_A(\d+)$")
 
 
 @dataclass
@@ -77,6 +79,10 @@ class CameraPairCrossValidation:
         num_persons: 人物数量（默认2）
         num_actions: 动作数量（默认12）
         num_cameras: 每个动作的摄像头数量（默认108）
+        use_layer_camera_filter: 是否启用按层/层内相机筛选
+        selected_layers: 需要保留的层编号列表（如 [1, 2, 5]）
+        selected_cameras_per_layer: 每层保留的相机编号（层内A编号）
+            示例: {"1": [1, 2, 3], "2": [5, 10]}
         split_strategy: 划分策略，可选 'by_person', 'by_action', 'by_camera_pair'
         n_splits: K折交叉验证的折数（仅用于 by_action 和 by_camera_pair 策略）
         index_save_path: 索引文件保存路径
@@ -88,6 +94,9 @@ class CameraPairCrossValidation:
         num_persons: int = 2,
         num_actions: int = 12,
         num_cameras: int = 108,
+        use_layer_camera_filter: bool = False,
+        selected_layers: Optional[List[int]] = None,
+        selected_cameras_per_layer: Optional[Dict[str, List[int]]] = None,
         split_strategy: str = "by_person",  # by_person, by_action, by_camera_pair
         n_splits: int = 5,
         sam3d_export_root: Optional[str] = None,
@@ -103,8 +112,31 @@ class CameraPairCrossValidation:
         self.num_persons = num_persons
         self.num_actions = num_actions
         self.num_cameras = num_cameras
+        self.use_layer_camera_filter = use_layer_camera_filter
+        self.selected_layers = selected_layers or []
+        self.selected_cameras_per_layer = selected_cameras_per_layer or {}
         self.split_strategy = split_strategy
         self.n_splits = n_splits
+
+        if self.use_layer_camera_filter and not self.selected_layers:
+            raise ValueError(
+                "启用 use_layer_camera_filter 时，必须提供 selected_layers"
+            )
+
+
+        for layer_key, camera_ids in self.selected_cameras_per_layer.items():
+            try:
+                int(layer_key)
+            except ValueError as exc:
+                raise ValueError(
+                    f"selected_cameras_per_layer 的层键必须可转为整数: {layer_key}"
+                ) from exc
+            if int(layer_key) < 0:
+                raise ValueError("selected_cameras_per_layer 的层键必须为非负整数")
+            if any(cam_id < 0 for cam_id in camera_ids):
+                raise ValueError(
+                    "selected_cameras_per_layer 的相机编号必须为非负整数"
+                )
 
         if index_save_path is None:
             self.index_save_path: Path = (
@@ -152,6 +184,45 @@ class CameraPairCrossValidation:
     def _to_abs_path(path: Path) -> str:
         return str(path.absolute())
 
+    @staticmethod
+    def _parse_capture_layer_camera(capture_name: str) -> Optional[tuple[int, int]]:
+        """从 capture_Lx_Ayyy 中解析层号和相机号（A编号）。"""
+        match = CAPTURE_NAME_PATTERN.match(capture_name)
+        if match is None:
+            return None
+        return int(match.group(1)), int(match.group(2))
+
+    def _filter_capture_dirs(self, capture_dirs: List[Path]) -> List[Path]:
+        """根据层与层内相机配置过滤 capture 目录。"""
+        if not self.use_layer_camera_filter:
+            return capture_dirs
+
+        selected_layers_set = set(self.selected_layers)
+        selected_camera_map = {
+            int(layer): set(cam_ids)
+            for layer, cam_ids in self.selected_cameras_per_layer.items()
+        }
+
+        filtered: List[Path] = []
+        for capture_dir in capture_dirs:
+            parsed = self._parse_capture_layer_camera(capture_dir.name)
+            if parsed is None:
+                continue
+
+            layer_id, camera_id = parsed
+            if layer_id not in selected_layers_set:
+                continue
+
+            if (
+                layer_id in selected_camera_map
+                and camera_id not in selected_camera_map[layer_id]
+            ):
+                continue
+
+            filtered.append(capture_dir)
+
+        return filtered
+
     def _discover_people_actions(self) -> Dict[str, List[str]]:
         if not self.data_dir.exists():
             raise FileNotFoundError(f"data目录不存在: {self.data_dir}")
@@ -181,6 +252,7 @@ class CameraPairCrossValidation:
 
         action_count_total = 0
         per_action_pair_count: List[int] = []
+        filtered_action_count = 0
 
         for person_id, actions in people_actions.items():
             for action_id in actions:
@@ -197,6 +269,13 @@ class CameraPairCrossValidation:
                     for p in frames_root.iterdir()
                     if p.is_dir() and p.name.startswith("capture_")
                 )
+
+                if self.use_layer_camera_filter:
+                    original_capture_count = len(capture_dirs)
+                    capture_dirs = self._filter_capture_dirs(capture_dirs)
+                    if len(capture_dirs) < original_capture_count:
+                        filtered_action_count += 1
+
                 if len(capture_dirs) < 2:
                     continue
 
@@ -252,6 +331,12 @@ class CameraPairCrossValidation:
         print(f"  - {people_count} 个人物")
         print(f"  - {action_count} 个动作")
         print(f"  - 每个动作平均 {avg_pairs} 个摄像头对")
+        if self.use_layer_camera_filter:
+            print(
+                f"  - 层筛选已启用: layers={self.selected_layers}, "
+                f"cameras_per_layer={self.selected_cameras_per_layer or 'ALL'}"
+            )
+            print(f"  - 应用筛选的动作数: {filtered_action_count}")
 
         return samples
 
@@ -497,6 +582,11 @@ class CameraPairCrossValidation:
         print(f"{'='*60}")
         print(f"策略: {self.split_strategy}")
         print(f"数据根目录: {self.data_root}")
+        print(
+            "层/相机筛选: "
+            f"{self.use_layer_camera_filter} (layers={self.selected_layers}, "
+            f"cameras_per_layer={self.selected_cameras_per_layer or 'ALL'})"
+        )
         print(f"{'='*60}\n")
 
         samples = self.build_all_samples()
@@ -534,6 +624,9 @@ class CameraPairCrossValidation:
             "num_persons": self.num_persons,
             "num_actions": self.num_actions,
             "num_cameras": self.num_cameras,
+            "use_layer_camera_filter": self.use_layer_camera_filter,
+            "selected_layers": self.selected_layers,
+            "selected_cameras_per_layer": self.selected_cameras_per_layer,
             "split_strategy": self.split_strategy,
             "n_splits": len(fold_dict),
             "total_samples": sum(
@@ -566,6 +659,11 @@ class CameraPairCrossValidation:
         print(f"  策略: {metadata.get('split_strategy', 'unknown')}")
         print(f"  折数: {metadata.get('n_splits', 'unknown')}")
         print(f"  总样本数: {metadata.get('total_samples', 'unknown')}")
+        print(
+            f"  层/相机筛选: {metadata.get('use_layer_camera_filter', False)} "
+            f"(layers={metadata.get('selected_layers', [])}, "
+            f"cameras_per_layer={metadata.get('selected_cameras_per_layer', {})})"
+        )
 
         # 反序列化
         fold_dict: Dict[int, Dict[str, Any]] = {}
@@ -602,21 +700,21 @@ class CameraPairCrossValidation:
             return fold_dict
 
 
-def main():
-    """
-    示例使用
-    """
-    for strategy in ["by_person", "by_action", "by_camera_pair"]:
-        cv = CameraPairCrossValidation(
-            data_root="/workspace/data/skiing_unity_dataset",
-            split_strategy=strategy,
-            n_splits=5,
-            index_save_path=f"/workspace/data/skiing_unity_dataset/index_mapping/camera_pairs_{strategy}.json",
-        )
-        folds = cv(force_recreate=True)
-        print(f"\n示例 - {strategy}:")
-        print(f"折数: {len(folds)}")
+# def main():
+#     """
+#     示例使用
+#     """
+#     for strategy in ["by_person", "by_action", "by_camera_pair"]:
+#         cv = CameraPairCrossValidation(
+#             data_root="/workspace/data/skiing_unity_dataset",
+#             split_strategy=strategy,
+#             n_splits=5,
+#             index_save_path=f"/workspace/data/skiing_unity_dataset/index_mapping/camera_pairs_{strategy}.json",
+#         )
+#         folds = cv(force_recreate=True)
+#         print(f"\n示例 - {strategy}:")
+#         print(f"折数: {len(folds)}")
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
