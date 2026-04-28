@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -A SKIIING
+#PBS -A SKIING
 #PBS -q gpu
 #PBS -l elapstim_req=24:00:00
 #PBS -N pole_ski_train
