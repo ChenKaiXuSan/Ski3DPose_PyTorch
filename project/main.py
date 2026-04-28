@@ -45,9 +45,6 @@ from project.map_config import UnityDataConfig
 # select different experiment trainer
 #####################################
 # baseline
-from project.trainer.baseline.train_3dcnn import Res3DCNNTrainer
-from project.trainer.early.train_early_fusion import EarlyFusion3DCNNTrainer
-from project.trainer.late.train_late_fusion import LateFusion3DCNNTrainer
 from project.trainer.train_fusion_SSM import FusionSSMTrainer
 from project.trainer.train_pose2equip import Pose2EquipTrainer
 
@@ -361,11 +358,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
 
     if hparams.train.view == "multi":
         if hparams.model.backbone == "3dcnn":
-            if hparams.model.fuse_method in ["add", "mul", "concat", "avg"]:
-                classification_module = EarlyFusion3DCNNTrainer(hparams)
-            elif hparams.model.fuse_method == "late":
-                classification_module = LateFusion3DCNNTrainer(hparams)
-            elif hparams.model.fuse_method in ["ssm", "mamba", "mamba_ssm"]:
+            if hparams.model.fuse_method in ["ssm", "mamba", "mamba_ssm"]:
                 classification_module = FusionSSMTrainer(hparams)
                 monitor_metric = "val/loss"
                 monitor_mode = "min"

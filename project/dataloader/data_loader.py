@@ -30,7 +30,10 @@ from torchvision.transforms import (
     Resize,
 )
 
-from project.dataloader.whole_video_dataset import whole_video_dataset
+from project.dataloader.whole_video_dataset import whole_video_dataset as whole_video_dataset_dual
+from project.dataloader.whole_video_dataset_single_view import (
+    whole_video_dataset as whole_video_dataset_single,
+)
 from project.dataloader.utils import Div255
 
 
@@ -45,6 +48,8 @@ class UnityDataModule(LightningDataModule):
         self._load_frames = bool(getattr(opt.data, "load_frames", True))
         self._load_2d_kpt = bool(getattr(opt.data, "load_2d_kpt", True))
         self._load_3d_kpt = bool(getattr(opt.data, "load_3d_kpt", True))
+        self._view = str(getattr(opt.train, "view", "dual")).lower()
+        self._is_single_view = self._view in {"single", "single_view", "cam1", "one"}
         if not self._load_frames and not self._load_2d_kpt and not self._load_3d_kpt:
             raise ValueError(
                 "At least one of data.load_frames/data.load_2d_kpt/data.load_3d_kpt must be true."
@@ -98,6 +103,7 @@ class UnityDataModule(LightningDataModule):
         has_frames = "frames" in first
         has_2d = "kpt2d_gt" in first and "kpt2d_sam" in first
         has_3d = "kpt3d_gt" in first and "kpt3d_sam" in first
+        has_cam2_frames = has_frames and "cam2" in first.get("frames", {})
 
         frames_cam1: List[torch.Tensor] = []
         frames_cam2: List[torch.Tensor] = []
@@ -124,9 +130,10 @@ class UnityDataModule(LightningDataModule):
                 frames_cam1.append(
                     self._merge_bt_video(sample["frames"]["cam1"], "frames/cam1")
                 )
-                frames_cam2.append(
-                    self._merge_bt_video(sample["frames"]["cam2"], "frames/cam2")
-                )
+                if has_cam2_frames and "cam2" in sample["frames"]:
+                    frames_cam2.append(
+                        self._merge_bt_video(sample["frames"]["cam2"], "frames/cam2")
+                    )
 
             if has_2d:
                 # Process 2D GT: iterate over all keys
@@ -210,10 +217,9 @@ class UnityDataModule(LightningDataModule):
         }
 
         if has_frames:
-            out["frames"] = {
-                "cam1": torch.cat(frames_cam1, dim=0),
-                "cam2": torch.cat(frames_cam2, dim=0),
-            }
+            out["frames"] = {"cam1": torch.cat(frames_cam1, dim=0)}
+            if has_cam2_frames and frames_cam2:
+                out["frames"]["cam2"] = torch.cat(frames_cam2, dim=0)
 
         if has_2d:
             # Concat 2D GT: multiple variant keys
@@ -259,8 +265,12 @@ class UnityDataModule(LightningDataModule):
             stage (Optional[str], optional): trainer.stage, in ('fit', 'validate', 'test', 'predict'). Defaults to None.
         """
 
+        dataset_builder = (
+            whole_video_dataset_single if self._is_single_view else whole_video_dataset_dual
+        )
+
         # train dataset
-        self.train_gait_dataset = whole_video_dataset(
+        self.train_gait_dataset = dataset_builder(
             experiment=self._experiment,
             dataset_idx=self._dataset_idx["train"],
             transform=self.mapping_transform,
@@ -270,7 +280,7 @@ class UnityDataModule(LightningDataModule):
         )
 
         # val dataset
-        self.val_gait_dataset = whole_video_dataset(
+        self.val_gait_dataset = dataset_builder(
             experiment=self._experiment,
             dataset_idx=self._dataset_idx["val"],
             transform=self.mapping_transform,
@@ -280,7 +290,7 @@ class UnityDataModule(LightningDataModule):
         )
 
         # test dataset
-        self.test_gait_dataset = whole_video_dataset(
+        self.test_gait_dataset = dataset_builder(
             experiment=self._experiment,
             dataset_idx=self._dataset_idx["test"],
             transform=self.mapping_transform,
@@ -300,7 +310,7 @@ class UnityDataModule(LightningDataModule):
             self.train_gait_dataset,
             batch_size=self._batch_size,
             num_workers=self._num_workers,
-            pin_memory=True,
+            pin_memory=False,  # 🚀 GPU内存传输加速（改自True）
             shuffle=True,
             drop_last=True,
             collate_fn=self._collate_fn,
@@ -319,7 +329,7 @@ class UnityDataModule(LightningDataModule):
             self.val_gait_dataset,
             batch_size=self._batch_size,
             num_workers=self._num_workers,
-            pin_memory=True,  # 🚀 GPU内存传输加速（改自False）
+            pin_memory=False,  # 🚀 GPU内存传输加速（改自True）
             shuffle=False,
             drop_last=True,
             collate_fn=self._collate_fn,
@@ -338,7 +348,7 @@ class UnityDataModule(LightningDataModule):
             self.test_gait_dataset,
             batch_size=self._batch_size,
             num_workers=self._num_workers,
-            pin_memory=True,  # 🚀 GPU内存传输加速（改自False）
+            pin_memory=False,  # 🚀 GPU内存传输加速（改自True）
             shuffle=False,
             drop_last=True,
             collate_fn=self._collate_fn,

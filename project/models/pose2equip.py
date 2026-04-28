@@ -22,6 +22,7 @@ Date      	By	Comments
 
 import torch
 import torch.nn as nn
+from torchvision.models import resnet18, ResNet18_Weights
 
 # =========================
 # Model
@@ -60,14 +61,10 @@ class Pose2EquipNet(nn.Module):
         self.right_wrist_idx = right_wrist_idx
 
         self.pose_encoder = PoseEncoder(num_joints, hidden_dim)
-        self.frame_encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
-        )
-        self.frame_proj = nn.Linear(64, hidden_dim)
+        
+        _resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.frame_encoder = nn.Sequential(*list(_resnet.children())[:-1])  # output: [B, 512, 1, 1]
+        self.frame_proj = nn.Linear(512, hidden_dim)
         self.fuse = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),

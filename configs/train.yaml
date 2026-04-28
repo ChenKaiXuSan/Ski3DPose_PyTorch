@@ -39,11 +39,10 @@ data:
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
 
-  batch_size: 16
+  batch_size: 4
 
 model:
-  backbone: 3dcnn # choices=[3dcnn, 2dcnn, cnn_lstm, two_stream, pose2equip], help='the backbone of the model'
-  model_class_num: 9 # the class num, left, right, up, down, left_up, left_down, right_up, right_down, front
+  backbone: pose2equip
 
   fuse_method: mamba_ssm # add, mul, concat, none, late, avg, cross_atn, se_atn, pose_atn
   fusion_layers: 5 # the fuse layer number of the model, used for cross attention, se attention, etc.
@@ -53,7 +52,7 @@ train:
   # Training config
   max_epochs: 100 # numer of epochs of training
 
-  view: multi # single or multi
+  view: single
 
   gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
   fold: 0 # the fold number for cross validation
