@@ -8,8 +8,6 @@ hydra:
 
 loss:
   lr: 0.0001
-  beta1: 0.5 # decapture
-  beta2: 0.999 # decapture
 
 data:
   root_path: /workspace/data/skiing_unity_dataset
@@ -27,7 +25,7 @@ data:
     video_path: ${data.root_path}/raw_data # 暂时不使用kpt
     sam_3d_body_results_path: ${data.root_path}/sam3d_body_results/person # 没有标签的训练数据
   unity:
-    data_path: ${data.root_path}/data_pole_ski 
+    data_path: ${data.root_path}/data_pole_ski
     sam_3d_body_results_path: ${data.root_path}/sam3d_body_results/inference # 有标签的训练数据
 
   index_mapping: ${data.root_path}/index_mapping # precomputed index mapping directory
@@ -41,10 +39,10 @@ data:
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
 
-  batch_size: 2048
+  batch_size: 16
 
 model:
-  backbone: 3dcnn # choices=[3dcnn, 2dcnn, cnn_lstm, two_stream], help='the backbone of the model'
+  backbone: 3dcnn # choices=[3dcnn, 2dcnn, cnn_lstm, two_stream, pose2equip], help='the backbone of the model'
   model_class_num: 9 # the class num, left, right, up, down, left_up, left_down, right_up, right_down, front
 
   fuse_method: mamba_ssm # add, mul, concat, none, late, avg, cross_atn, se_atn, pose_atn
@@ -60,5 +58,22 @@ train:
   gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
   fold: 0 # the fold number for cross validation
 
-experiment: ${model.backbone}_fuse_method_${model.fuse_method} # the experiment name, used for log path
-log_path: logs/train/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}
+# Used only when model.backbone=pose2equip
+pose2equip:
+  num_joints: 15
+
+  weight_decay: 0.0001
+  loss_w_attach: 0.1
+  loss_w_len: 0.05
+
+  # 这里应该是过滤之后的idx
+  left_ankle_idx: 10
+  right_ankle_idx: 11
+  left_wrist_idx: 12
+  right_wrist_idx: 13
+  # GT点索引，应该和unity记录的GT点顺序一致，或者至少保证能正确选取对应的点进行训练
+  ski_gt_idx: [1, 2, 4, 5]
+  pole_gt_idx: [0, 1, 2, 3]
+
+experiment: ${model.backbone} # the experiment name, used for log path
+log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}

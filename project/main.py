@@ -49,6 +49,7 @@ from project.trainer.baseline.train_3dcnn import Res3DCNNTrainer
 from project.trainer.early.train_early_fusion import EarlyFusion3DCNNTrainer
 from project.trainer.late.train_late_fusion import LateFusion3DCNNTrainer
 from project.trainer.train_fusion_SSM import FusionSSMTrainer
+from project.trainer.train_pose2equip import Pose2EquipTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -352,8 +353,6 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     """
 
     seed_everything(42, workers=True)
-    req = _validate_input_loading_config(hparams)
-    logger.info("Using trainer %s for fold %s", req["trainer_name"], fold)
 
     # * select experiment
     monitor_metric = "val/video_acc"
@@ -376,7 +375,8 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
         else:
             raise ValueError("the experiment backbone is not supported.")
     elif hparams.train.view == "single":
-        classification_module = Res3DCNNTrainer(hparams)
+        if hparams.model.backbone == "pose2equip":
+            classification_module = Pose2EquipTrainer(hparams)
     else:
         raise ValueError("the experiment view is not supported.")
 
@@ -449,6 +449,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     config_name="train.yaml",
 )
 def init_params(config):
+
     # Load precomputed fold mapping only; do not prepare CV splits here.
     # 使用预生成的单fold JSON文件（每个fold文件必须存在）
 

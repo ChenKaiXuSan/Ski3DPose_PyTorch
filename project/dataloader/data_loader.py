@@ -84,7 +84,7 @@ class UnityDataModule(LightningDataModule):
 
     def _collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Keep variable T per sample by flattening B and T into pseudo-batch.
-        
+
         Supports variant-based keypoint structure:
         - kpt2d_gt: {character_cam1, character_cam2, pole_cam1, pole_cam2, ski_cam1, ski_cam2}
         - kpt2d_sam: {character_cam1, character_cam2} (SAM only has character)
@@ -101,21 +101,21 @@ class UnityDataModule(LightningDataModule):
 
         frames_cam1: List[torch.Tensor] = []
         frames_cam2: List[torch.Tensor] = []
-        
+
         # 2D GT: multiple variants
         gt2d_variant_lists: Dict[str, List[torch.Tensor]] = {}
-        
+
         # 2D SAM: character only
         sam2d_cam1: List[torch.Tensor] = []
         sam2d_cam2: List[torch.Tensor] = []
-        
+
         # 3D GT: multiple variants
         gt3d_variant_lists: Dict[str, List[torch.Tensor]] = {}
-        
+
         # 3D SAM: character only
         sam3d_cam1: List[torch.Tensor] = []
         sam3d_cam2: List[torch.Tensor] = []
-        
+
         frame_indices: List[torch.Tensor] = []
         meta_rows: List[Dict[str, Any]] = []
 
@@ -136,34 +136,42 @@ class UnityDataModule(LightningDataModule):
                     gt2d_variant_lists[key].append(
                         self._merge_bt_pose(value, f"kpt2d_gt/{key}")
                     )
-                
+
                 # Process 2D SAM: character_cam1 and character_cam2 only
                 if "character_cam1" in sample["kpt2d_sam"]:
                     sam2d_cam1.append(
-                        self._merge_bt_pose(sample["kpt2d_sam"]["character_cam1"], "kpt2d_sam/character_cam1")
+                        self._merge_bt_pose(
+                            sample["kpt2d_sam"]["character_cam1"],
+                            "kpt2d_sam/character_cam1",
+                        )
                     )
                 if "character_cam2" in sample["kpt2d_sam"]:
                     sam2d_cam2.append(
-                        self._merge_bt_pose(sample["kpt2d_sam"]["character_cam2"], "kpt2d_sam/character_cam2")
+                        self._merge_bt_pose(
+                            sample["kpt2d_sam"]["character_cam2"],
+                            "kpt2d_sam/character_cam2",
+                        )
                     )
 
             if has_3d:
                 # Process 3D SAM: character_cam1 and character_cam2 only
                 if "character_cam1" in sample["kpt3d_sam"]:
-                    sam3d_cam1.append(
-                        self._merge_bt_pose(sample["kpt3d_sam"]["character_cam1"], "kpt3d_sam/character_cam1")
-                    )
+                    # sam3d_cam1.append(
+                    #     self._merge_bt_pose(sample["kpt3d_sam"]["character_cam1"], "kpt3d_sam/character_cam1")
+                    # )
+                    sam3d_cam1.append(sample["kpt3d_sam"]["character_cam1"])
                 if "character_cam2" in sample["kpt3d_sam"]:
-                    sam3d_cam2.append(
-                        self._merge_bt_pose(sample["kpt3d_sam"]["character_cam2"], "kpt3d_sam/character_cam2")
-                    )
-                
+                    # sam3d_cam2.append(
+                    #     self._merge_bt_pose(sample["kpt3d_sam"]["character_cam2"], "kpt3d_sam/character_cam2")
+                    # )
+                    sam3d_cam2.append(sample["kpt3d_sam"]["character_cam2"])
+
                 # Process 3D GT: iterate over all keys (character, pole, ski)
                 for key, value in sample["kpt3d_gt"].items():
                     if key not in gt3d_variant_lists:
                         gt3d_variant_lists[key] = []
                     gt3d_variant_lists[key].append(
-                        self._merge_bt_pose(value, f"kpt3d_gt/{key}")
+                        value
                     )
 
             idx = sample.get("frame_indices")
@@ -193,9 +201,11 @@ class UnityDataModule(LightningDataModule):
                 meta_rows.append(row)
 
         out: Dict[str, Any] = {
-            "frame_indices": torch.cat(frame_indices, dim=0)
-            if frame_indices
-            else torch.empty(0, dtype=torch.long),
+            "frame_indices": (
+                torch.cat(frame_indices, dim=0)
+                if frame_indices
+                else torch.empty(0, dtype=torch.long)
+            ),
             "meta": meta_rows,
         }
 
@@ -208,7 +218,7 @@ class UnityDataModule(LightningDataModule):
         if has_2d:
             # Concat 2D GT: multiple variant keys
             out["kpt2d_gt"] = {
-                key: torch.cat(tensors, dim=0) 
+                key: torch.cat(tensors, dim=0)
                 for key, tensors in gt2d_variant_lists.items()
             }
             # Concat 2D SAM: character only
@@ -232,7 +242,6 @@ class UnityDataModule(LightningDataModule):
                 out["kpt3d_sam"]["character_cam2"] = torch.cat(sam3d_cam2, dim=0)
 
         return out
-
 
     def prepare_data(self) -> None:
         """here prepare the temp val data path,
