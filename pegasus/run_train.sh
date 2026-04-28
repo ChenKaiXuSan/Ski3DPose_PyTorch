@@ -22,7 +22,7 @@ conda env list
 # === 2. 训练参数（按需修改） ===
 DATA_ROOT="/work/SKIING/chenkaixu/data/skiing/skiing_unity_dataset"
 INDEX_MAPPING_DIR="${DATA_ROOT}/index_mapping"
-INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/camera_pairs_by_action_folds"
+INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/use_layer_camera_filter_enabled/camera_pairs_by_action_folds"
 
 MODEL_BACKBONE="pose2equip"
 FUSE_METHOD="mamba_ssm"
