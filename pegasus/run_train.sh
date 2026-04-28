@@ -1,34 +1,34 @@
 #!/bin/bash
-#PBS -A SSR
+#PBS -A SKIIING
 #PBS -q gpu
 #PBS -l elapstim_req=24:00:00
-#PBS -N fusion_SSM_train
-#PBS -t 0-9
+#PBS -N pole_ski_train
+#PBS -t 0-4
 #PBS -o logs/pegasus/train_${PBS_SUBREQNO}.log
 #PBS -e logs/pegasus/train_${PBS_SUBREQNO}_err.log
 
 # === 1. 環境準備 ===
-PROJECT_ROOT="/work/SSR/share/code/Skiing_Canonical_DualView_3D_Pose_PyTorch"
+PROJECT_ROOT="/work/SKIING/chenkaixu/code/Ski3DPose_PyTorch"
 cd "${PROJECT_ROOT}" || exit 1
 
 mkdir -p logs/pegasus/
 
 source ${CONDA_PREFIX}/etc/profile.d/conda.sh
 conda deactivate
-conda activate /home/SSR/luoxi/miniconda3/envs/multiview-video-cls
+conda activate /home/SKIING/chenkaixu/miniconda3/envs/sam_3d_body
 
 conda env list
 
 # === 2. 训练参数（按需修改） ===
-DATA_ROOT="/work/SSR/share/data/skiing/skiing_unity_dataset"
+DATA_ROOT="/work/SKIING/chenkaixu/data/skiing/skiing_unity_dataset"
 INDEX_MAPPING_DIR="${DATA_ROOT}/index_mapping"
 INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/camera_pairs_by_action_folds"
 
-MODEL_BACKBONE="3dcnn"
+MODEL_BACKBONE="pose2equip"
 FUSE_METHOD="mamba_ssm"
 
 NUM_WORKERS=32
-BATCH_SIZE=2048
+BATCH_SIZE=16
 
 # fold assignment:
 # - PBS array mode: use PBS_ARRAY_INDEX
