@@ -58,13 +58,12 @@ class LabeledUnityDataset(Dataset):
         """Map configured target ids to source array indices.
 
         Priority:
-          1) one-based id -> zero-based index (jid - 1)
-          2) direct index (jid)
-          3) compact target index from ID_TO_INDEX
+          1) direct index (jid)
+          2) compact target index from ID_TO_INDEX
         """
         selected: List[int] = []
         for jid in cls._ordered_target_ids():
-            candidates = (jid - 1, jid, ID_TO_INDEX[jid])
+            candidates = (jid, ID_TO_INDEX[jid])
             src_idx = next((c for c in candidates if 0 <= c < num_joints), None)
             if src_idx is None:
                 raise IndexError(
