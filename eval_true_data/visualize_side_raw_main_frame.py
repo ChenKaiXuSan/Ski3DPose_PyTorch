@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from project.dataloader.whole_video_dataset import LabeledUnityDataset
+from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
 from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS, TARGET_IDS, UNITY_MHR70_MAPPING
 from project.trainer.train_fusion_SSM import FusionSSMTrainer
 

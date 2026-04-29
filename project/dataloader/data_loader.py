@@ -30,7 +30,7 @@ from torchvision.transforms import (
     Resize,
 )
 
-from project.dataloader.whole_video_dataset import whole_video_dataset as whole_video_dataset_dual
+from project.dataloader.whole_video_dataset_dual_view import whole_video_dataset as whole_video_dataset_dual
 from project.dataloader.whole_video_dataset_single_view import (
     whole_video_dataset as whole_video_dataset_single,
 )

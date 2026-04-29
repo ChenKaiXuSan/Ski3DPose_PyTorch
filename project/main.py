@@ -94,43 +94,6 @@ def _resolve_trainer_requirements(hparams: DictConfig) -> Dict[str, object]:
     )
 
 
-def _validate_input_loading_config(hparams: DictConfig) -> Dict[str, object]:
-    """Fail fast when dataloader switches do not satisfy trainer inputs."""
-    req = _resolve_trainer_requirements(hparams)
-
-    load_frames = bool(getattr(hparams.data, "load_frames", True))
-    load_2d_kpt = bool(getattr(hparams.data, "load_2d_kpt", True))
-    load_3d_kpt = bool(getattr(hparams.data, "load_3d_kpt", True))
-
-    missing: List[str] = []
-    if bool(req["requires_frames"]) and not load_frames:
-        missing.append("frames")
-    if bool(req["requires_2d_kpt"]) and not load_2d_kpt:
-        missing.append("2D keypoints")
-    if bool(req["requires_3d_kpt"]) and not load_3d_kpt:
-        missing.append("3D keypoints")
-
-    logger.info(
-        "Trainer=%s | required inputs: frames=%s, 2d=%s, 3d=%s | enabled loading: frames=%s, 2d=%s, 3d=%s",
-        req["trainer_name"],
-        req["requires_frames"],
-        req["requires_2d_kpt"],
-        req["requires_3d_kpt"],
-        load_frames,
-        load_2d_kpt,
-        load_3d_kpt,
-    )
-
-    if missing:
-        raise ValueError(
-            f"Current trainer {req['trainer_name']} requires: {', '.join(missing)}, "
-            "but the corresponding dataloader switches are disabled. "
-            f"Current config: load_frames={load_frames}, load_2d_kpt={load_2d_kpt}, load_3d_kpt={load_3d_kpt}"
-        )
-
-    return req
-
-
 def load_fold_dataset_idx_from_fold_json(
     config: DictConfig, fold: int
 ) -> Dict[str, List[UnityDataConfig]]:

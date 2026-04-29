@@ -20,10 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from project.dataloader.whole_video_dataset import LabeledUnityDataset
-from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS, TARGET_IDS, UNITY_MHR70_MAPPING
+from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
+from project.map_config import (
+    ID_TO_INDEX,
+    SKELETON_CONNECTIONS,
+    TARGET_IDS,
+    UNITY_MHR70_MAPPING,
+)
 from project.models.pose2equip import Pose2EquipNet
-
 
 EQUIP_LABELS = [
     "left_ski_tip",
@@ -88,7 +92,9 @@ def _extract_float_token(token: str) -> Optional[float]:
         return None
 
 
-def _parse_ckpt_name(ckpt_name: str) -> Optional[Tuple[int, Optional[float], Optional[float]]]:
+def _parse_ckpt_name(
+    ckpt_name: str,
+) -> Optional[Tuple[int, Optional[float], Optional[float]]]:
     m = re.match(r"^(\d+)-([^\-]+)(?:-([^\-]+))?\.ckpt$", ckpt_name)
     if not m:
         return None
@@ -105,7 +111,9 @@ def _select_best_ckpt(ckpt_dir: Path) -> Path:
     if not all_ckpts:
         raise FileNotFoundError(f"No checkpoint found in {ckpt_dir}")
 
-    candidates = [p for p in all_ckpts if p.name.lower() not in {"last.ckpt", "last-v1.ckpt"}]
+    candidates = [
+        p for p in all_ckpts if p.name.lower() not in {"last.ckpt", "last-v1.ckpt"}
+    ]
     if not candidates:
         for name in ["last.ckpt", "last-v1.ckpt"]:
             p = ckpt_dir / name
@@ -131,15 +139,23 @@ def _select_best_ckpt(ckpt_dir: Path) -> Path:
     return parsed[0][0]
 
 
-def _frame_to_model_tensor(frame_rgb: np.ndarray, image_size: int, device: torch.device) -> torch.Tensor:
-    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(2, 0, 1)
+def _frame_to_model_tensor(
+    frame_rgb: np.ndarray, image_size: int, device: torch.device
+) -> torch.Tensor:
+    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(
+        2, 0, 1
+    )
     x = x / 255.0
     x = x.unsqueeze(0)
-    x = F.interpolate(x, size=(image_size, image_size), mode="bilinear", align_corners=False)
+    x = F.interpolate(
+        x, size=(image_size, image_size), mode="bilinear", align_corners=False
+    )
     return x.to(device)
 
 
-def _load_pose2equip_from_ckpt(ckpt_path: Path, cfg: Any, device: torch.device) -> Pose2EquipNet:
+def _load_pose2equip_from_ckpt(
+    ckpt_path: Path, cfg: Any, device: torch.device
+) -> Pose2EquipNet:
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     state_dict = ckpt.get("state_dict", ckpt)
 
@@ -173,7 +189,14 @@ def _set_equal_axes_3d(ax, xyz: np.ndarray) -> None:
     ax.set_zlim(center[2] - radius, center[2] + radius)
 
 
-def _draw_2d(ax, frame: np.ndarray, kpt2d: np.ndarray, edges: List[Tuple[int, int]], labels: List[str], show_labels: bool) -> None:
+def _draw_2d(
+    ax,
+    frame: np.ndarray,
+    kpt2d: np.ndarray,
+    edges: List[Tuple[int, int]],
+    labels: List[str],
+    show_labels: bool,
+) -> None:
     ax.imshow(frame)
     ax.set_title("Frame + SAM 2D")
     ax.axis("off")
@@ -199,7 +222,13 @@ def _draw_2d(ax, frame: np.ndarray, kpt2d: np.ndarray, edges: List[Tuple[int, in
             )
 
 
-def _draw_3d(ax, kpt3d: np.ndarray, edges: List[Tuple[int, int]], labels: List[str], show_labels: bool) -> None:
+def _draw_3d(
+    ax,
+    kpt3d: np.ndarray,
+    edges: List[Tuple[int, int]],
+    labels: List[str],
+    show_labels: bool,
+) -> None:
     ax.set_title("SAM 3D")
     ax.scatter(kpt3d[:, 0], kpt3d[:, 1], kpt3d[:, 2], s=16, c="tab:red", alpha=0.9)
 
@@ -214,7 +243,13 @@ def _draw_3d(ax, kpt3d: np.ndarray, edges: List[Tuple[int, int]], labels: List[s
 
     if show_labels:
         for i in range(min(len(kpt3d), len(labels))):
-            ax.text(float(kpt3d[i, 0]), float(kpt3d[i, 1]), float(kpt3d[i, 2]), labels[i], fontsize=8)
+            ax.text(
+                float(kpt3d[i, 0]),
+                float(kpt3d[i, 1]),
+                float(kpt3d[i, 2]),
+                labels[i],
+                fontsize=8,
+            )
 
     _set_equal_axes_3d(ax, kpt3d)
     ax.set_xlabel("X")
@@ -223,7 +258,9 @@ def _draw_3d(ax, kpt3d: np.ndarray, edges: List[Tuple[int, int]], labels: List[s
 
 
 def _draw_equipment_3d(ax, pred_obj: np.ndarray) -> None:
-    ax.scatter(pred_obj[:, 0], pred_obj[:, 1], pred_obj[:, 2], s=24, c="tab:green", alpha=0.95)
+    ax.scatter(
+        pred_obj[:, 0], pred_obj[:, 1], pred_obj[:, 2], s=24, c="tab:green", alpha=0.95
+    )
 
     segments = [(0, 1), (2, 3), (4, 5), (6, 7)]
     for i, j in segments:
@@ -246,15 +283,34 @@ def main() -> None:
         default=Path("/workspace/data/sam3d_body_results/person"),
         help="Root containing <run_id>/<left|right>/frame_xxxxx_sam_3d_body_outputs.npz",
     )
-    parser.add_argument("--run-id", type=str, default="pro_2", help="Run/person id under sam-root")
-    parser.add_argument("--side", type=str, default="right", choices=["left", "right"], help="Camera side")
-    parser.add_argument("--frame-index", type=int, default=None, help="Specific frame index. Default: middle one")
-    parser.add_argument("--max-frames", type=int, default=1, help="How many frames to visualize")
-    parser.add_argument("--stride", type=int, default=30, help="Frame stride when max-frames > 1")
+    parser.add_argument(
+        "--run-id", type=str, default="pro_1", help="Run/person id under sam-root"
+    )
+    parser.add_argument(
+        "--side",
+        type=str,
+        default="right",
+        choices=["left", "right"],
+        help="Camera side",
+    )
+    parser.add_argument(
+        "--frame-index",
+        type=int,
+        default=None,
+        help="Specific frame index. Default: middle one",
+    )
+    parser.add_argument(
+        "--max-frames", type=int, default=10, help="How many frames to visualize"
+    )
+    parser.add_argument(
+        "--stride", type=int, default=30, help="Frame stride when max-frames > 1"
+    )
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/person_sam3d_frame_vis"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip_true_frame"
+        ),
         help="Output directory",
     )
     parser.add_argument(
@@ -266,13 +322,17 @@ def main() -> None:
     parser.add_argument(
         "--ckpt-dir",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-04-28/fold_0/checkpoints"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-04-29/fold_0/checkpoints/fold_0"
+        ),
         help="Pose2Equip checkpoint directory (or its parent).",
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/configs/train.yaml"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/configs/train.yaml"
+        ),
         help="Config file used for pose2equip joint index settings.",
     )
     parser.add_argument(
@@ -320,7 +380,9 @@ def main() -> None:
     else:
         mid = len(all_indices) // 2
         start = all_indices[mid]
-        picked = all_indices[all_indices.index(start) :: max(1, int(args.stride))][: max(1, int(args.max_frames))]
+        picked = all_indices[all_indices.index(start) :: max(1, int(args.stride))][
+            : max(1, int(args.max_frames))
+        ]
 
     out_dir = args.out_dir / args.run_id / args.side / Path(ckpt_path).stem
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -357,8 +419,12 @@ def main() -> None:
                 f"Model expects {expected_joints} joints, but got {kpt3d_t.shape[0]} from SAM output"
             )
 
-        human_3d_t = torch.from_numpy(kpt3d_t.astype(np.float32)).unsqueeze(0).to(device)
-        frame_t = _frame_to_model_tensor(frame.astype(np.float32), image_size=image_size, device=device)
+        human_3d_t = (
+            torch.from_numpy(kpt3d_t.astype(np.float32)).unsqueeze(0).to(device)
+        )
+        frame_t = _frame_to_model_tensor(
+            frame.astype(np.float32), image_size=image_size, device=device
+        )
         with torch.no_grad():
             out = model(human_3d=human_3d_t, human_frame=frame_t)
 
@@ -379,7 +445,9 @@ def main() -> None:
         ax3.set_title("SAM human 3D + Pose2Equip")
         _set_equal_axes_3d(ax3, np.concatenate([kpt3d_t, pred_obj], axis=0))
 
-        fig.suptitle(f"run={args.run_id} side={args.side} frame={idx} | ckpt={ckpt_path.name}")
+        fig.suptitle(
+            f"run={args.run_id} side={args.side} frame={idx} | ckpt={ckpt_path.name}"
+        )
         fig.tight_layout()
 
         png_path = out_dir / f"frame_{idx:06d}_vis.png"
@@ -407,7 +475,13 @@ def main() -> None:
                 indent=2,
             )
 
-        records.append({"frame_index": int(idx), "vis": str(png_path), "kpt3d_json": str(json_path)})
+        records.append(
+            {
+                "frame_index": int(idx),
+                "vis": str(png_path),
+                "kpt3d_json": str(json_path),
+            }
+        )
 
     summary_path = out_dir / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:

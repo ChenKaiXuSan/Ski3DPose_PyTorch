@@ -1,5 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
+'''
+File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader/whole_video_dataset_dual_view.py
+Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader
+Created Date: Tuesday February 10th 2026
+Author: Kaixu Chen
+-----
+Comment:
+TODO: 加载时间信息的时候，需要对每个数据段的T进行统一
+例如，进来的是C, T, h, w，
+因为每个数据段的T是不一样的，没有办法叠起来。
+需要上采样/下采样把时间统一起来。
+Have a good code time :)
+-----
+Last Modified: Wednesday April 29th 2026 10:29:43 am
+Modified By: the developer formerly known as Kaixu Chen at <chenkaixusan@gmail.com>
+-----
+Copyright (c) 2026 The University of Tsukuba
+-----
+HISTORY:
+Date      	By	Comments
+----------	---	---------------------------------------------------------
+'''
+
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
@@ -26,7 +49,7 @@ class LabeledUnityDataset(Dataset):
     def __init__(
         self,
         experiment: str,
-        index_mapping: UnityDataConfig,
+        index_mapping: List[UnityDataConfig],
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         load_frames: bool = True,
         load_2d_kpt: bool = True,
@@ -224,7 +247,9 @@ class LabeledUnityDataset(Dataset):
         return int(kpt.shape[0]) == 0
 
     @staticmethod
-    def _pick_fallback_frame_index(target_idx: int, valid_indices: List[int]) -> Optional[int]:
+    def _pick_fallback_frame_index(
+        target_idx: int, valid_indices: List[int]
+    ) -> Optional[int]:
         """Pick fallback index: prefer nearest previous, otherwise nearest next."""
         if not valid_indices:
             return None
@@ -240,7 +265,9 @@ class LabeledUnityDataset(Dataset):
         return None
 
     @staticmethod
-    def _read_none_detected_indices(output_dir: Path) -> Tuple[bool, List[int], List[str]]:
+    def _read_none_detected_indices(
+        output_dir: Path,
+    ) -> Tuple[bool, List[int], List[str]]:
         """Read none_detected_frames.txt under one SAM output directory.
 
         Returns:
@@ -293,7 +320,9 @@ class LabeledUnityDataset(Dataset):
 
             sam2d, sam3d = self._load_sam3d_file(sam_file_map[idx])
             loaded[idx] = (sam2d, sam3d)
-            if not self._is_empty_keypoint_array(sam2d) and not self._is_empty_keypoint_array(sam3d):
+            if not self._is_empty_keypoint_array(
+                sam2d
+            ) and not self._is_empty_keypoint_array(sam3d):
                 valid_indices.append(idx)
 
         if not valid_indices:
@@ -307,9 +336,15 @@ class LabeledUnityDataset(Dataset):
             if idx in loaded:
                 sam2d, sam3d = loaded[idx]
             else:
-                sam2d, sam3d = np.empty((0, 0), dtype=np.float32), np.empty((0, 0), dtype=np.float32)
+                sam2d, sam3d = np.empty((0, 0), dtype=np.float32), np.empty(
+                    (0, 0), dtype=np.float32
+                )
 
-            if idx in loaded and not self._is_empty_keypoint_array(sam2d) and not self._is_empty_keypoint_array(sam3d):
+            if (
+                idx in loaded
+                and not self._is_empty_keypoint_array(sam2d)
+                and not self._is_empty_keypoint_array(sam3d)
+            ):
                 resolved[idx] = (sam2d, sam3d)
                 continue
 
@@ -341,7 +376,8 @@ class LabeledUnityDataset(Dataset):
             return
 
         expected_paths = [
-            str((sam_dir / f"{idx:06d}_sam3d_body.npz").resolve()) for idx in missing_indices
+            str((sam_dir / f"{idx:06d}_sam3d_body.npz").resolve())
+            for idx in missing_indices
         ]
         logger.warning(
             "Missing SAM files for camera %s (count=%s). Full expected paths:\n%s",
@@ -391,22 +427,38 @@ class LabeledUnityDataset(Dataset):
         frame_indices_t: torch.Tensor,
     ) -> None:
         """Validate left/right camera shape alignment and camera IDE consistency."""
-        if cam1_frames_t is not None and cam2_frames_t is not None and cam1_frames_t.shape != cam2_frames_t.shape:
+        if (
+            cam1_frames_t is not None
+            and cam2_frames_t is not None
+            and cam1_frames_t.shape != cam2_frames_t.shape
+        ):
             raise ValueError(
                 f"Left/right frame shape mismatch: {tuple(cam1_frames_t.shape)} vs {tuple(cam2_frames_t.shape)}"
             )
 
-        if cam1_kpt2d_t is not None and cam2_kpt2d_t is not None and cam1_kpt2d_t.shape != cam2_kpt2d_t.shape:
+        if (
+            cam1_kpt2d_t is not None
+            and cam2_kpt2d_t is not None
+            and cam1_kpt2d_t.shape != cam2_kpt2d_t.shape
+        ):
             raise ValueError(
                 f"Left/right GT 2D shape mismatch: {tuple(cam1_kpt2d_t.shape)} vs {tuple(cam2_kpt2d_t.shape)}"
             )
 
-        if sam2d_cam1_t is not None and sam2d_cam2_t is not None and sam2d_cam1_t.shape != sam2d_cam2_t.shape:
+        if (
+            sam2d_cam1_t is not None
+            and sam2d_cam2_t is not None
+            and sam2d_cam1_t.shape != sam2d_cam2_t.shape
+        ):
             raise ValueError(
                 f"Left/right SAM 2D shape mismatch: {tuple(sam2d_cam1_t.shape)} vs {tuple(sam2d_cam2_t.shape)}"
             )
 
-        if sam3d_cam1_t is not None and sam3d_cam2_t is not None and sam3d_cam1_t.shape != sam3d_cam2_t.shape:
+        if (
+            sam3d_cam1_t is not None
+            and sam3d_cam2_t is not None
+            and sam3d_cam1_t.shape != sam3d_cam2_t.shape
+        ):
             raise ValueError(
                 f"Left/right SAM 3D shape mismatch: {tuple(sam3d_cam1_t.shape)} vs {tuple(sam3d_cam2_t.shape)}"
             )
@@ -421,17 +473,11 @@ class LabeledUnityDataset(Dataset):
             t_ref = t_frames
 
         if cam1_kpt2d_t is not None and int(cam1_kpt2d_t.shape[0]) != t_ref:
-            raise ValueError(
-                f"GT 2D T {int(cam1_kpt2d_t.shape[0])} != ref T {t_ref}"
-            )
+            raise ValueError(f"GT 2D T {int(cam1_kpt2d_t.shape[0])} != ref T {t_ref}")
         if sam2d_cam1_t is not None and int(sam2d_cam1_t.shape[0]) != t_ref:
-            raise ValueError(
-                f"SAM 2D T {int(sam2d_cam1_t.shape[0])} != ref T {t_ref}"
-            )
+            raise ValueError(f"SAM 2D T {int(sam2d_cam1_t.shape[0])} != ref T {t_ref}")
         if sam3d_cam1_t is not None and int(sam3d_cam1_t.shape[0]) != t_ref:
-            raise ValueError(
-                f"SAM 3D T {int(sam3d_cam1_t.shape[0])} != ref T {t_ref}"
-            )
+            raise ValueError(f"SAM 3D T {int(sam3d_cam1_t.shape[0])} != ref T {t_ref}")
 
         cam1_id = item.get("cam1_id", "")
         cam2_id = item.get("cam2_id", "")
@@ -463,22 +509,59 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam2_kpt3d_dir: Path,
         common_idx: List[int],
         apply_filtering: bool = True,
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        torch.Tensor,
+    ]:
         """Load keypoints for a single variant.
-        
+
         Args:
             apply_filtering: If True, filter keypoints using TARGET_IDS. If False, keep all joints.
-        
+
         Returns:
             (cam1_kpt2d_t, cam2_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam2d_cam2_t, sam3d_cam1_t, sam3d_cam2_t, frame_indices_t)
         """
-        cam1_kpt2d_map = self._build_idx_file_map(cam1_kpt2d_dir, "kpt2d_*.npy") if self._load_2d_kpt else {}
-        cam2_kpt2d_map = self._build_idx_file_map(cam2_kpt2d_dir, "kpt2d_*.npy") if self._load_2d_kpt else {}
-        kpt3d_map = self._build_idx_file_map(kpt3d_dir, "frame_*.npy") if self._load_3d_kpt else {}
-        sam3d_cam1_kpt2d_map = self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy") if self._load_2d_kpt else {}
-        sam3d_cam2_kpt2d_map = self._build_idx_file_map(sam3d_cam2_kpt2d_dir, "kpt2d_*.npy") if self._load_2d_kpt else {}
-        sam3d_cam1_kpt3d_map = self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy") if self._load_3d_kpt else {}
-        sam3d_cam2_kpt3d_map = self._build_idx_file_map(sam3d_cam2_kpt3d_dir, "kpt3d_*.npy") if self._load_3d_kpt else {}
+        cam1_kpt2d_map = (
+            self._build_idx_file_map(cam1_kpt2d_dir, "kpt2d_*.npy")
+            if self._load_2d_kpt
+            else {}
+        )
+        cam2_kpt2d_map = (
+            self._build_idx_file_map(cam2_kpt2d_dir, "kpt2d_*.npy")
+            if self._load_2d_kpt
+            else {}
+        )
+        kpt3d_map = (
+            self._build_idx_file_map(kpt3d_dir, "frame_*.npy")
+            if self._load_3d_kpt
+            else {}
+        )
+        sam3d_cam1_kpt2d_map = (
+            self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy")
+            if self._load_2d_kpt
+            else {}
+        )
+        sam3d_cam2_kpt2d_map = (
+            self._build_idx_file_map(sam3d_cam2_kpt2d_dir, "kpt2d_*.npy")
+            if self._load_2d_kpt
+            else {}
+        )
+        sam3d_cam1_kpt3d_map = (
+            self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy")
+            if self._load_3d_kpt
+            else {}
+        )
+        sam3d_cam2_kpt3d_map = (
+            self._build_idx_file_map(sam3d_cam2_kpt3d_dir, "kpt3d_*.npy")
+            if self._load_3d_kpt
+            else {}
+        )
 
         cam1_kpt2d: List[torch.Tensor] = []
         cam2_kpt2d: List[torch.Tensor] = []
@@ -500,12 +583,16 @@ class LabeledUnityDataset(Dataset):
             if self._load_2d_kpt:
                 cam1_2d = np.asarray(np.load(cam1_kpt2d_map[idx]), dtype=np.float32)
                 cam2_2d = np.asarray(np.load(cam2_kpt2d_map[idx]), dtype=np.float32)
-                
+
                 if apply_filtering:
                     if cam1_2d_sel is None:
-                        cam1_2d_sel = self._get_or_build_source_joint_indices(cam1_2d.shape[0])
+                        cam1_2d_sel = self._get_or_build_source_joint_indices(
+                            cam1_2d.shape[0]
+                        )
                     if cam2_2d_sel is None:
-                        cam2_2d_sel = self._get_or_build_source_joint_indices(cam2_2d.shape[0])
+                        cam2_2d_sel = self._get_or_build_source_joint_indices(
+                            cam2_2d.shape[0]
+                        )
                     cam1_kpt2d.append(
                         torch.from_numpy(
                             self._filter_keypoints_with_indices(cam1_2d, cam1_2d_sel)
@@ -523,10 +610,12 @@ class LabeledUnityDataset(Dataset):
 
             if self._load_3d_kpt:
                 gt_3d = np.asarray(np.load(kpt3d_map[idx]), dtype=np.float32)
-                
+
                 if apply_filtering:
                     if gt_3d_sel is None:
-                        gt_3d_sel = self._get_or_build_source_joint_indices(gt_3d.shape[0])
+                        gt_3d_sel = self._get_or_build_source_joint_indices(
+                            gt_3d.shape[0]
+                        )
                     gt_kpt3d.append(
                         torch.from_numpy(
                             self._filter_keypoints_with_indices(gt_3d, gt_3d_sel)
@@ -537,14 +626,22 @@ class LabeledUnityDataset(Dataset):
                     gt_kpt3d.append(torch.from_numpy(gt_3d))
 
             if self._load_2d_kpt:
-                sam1_2d = np.asarray(np.load(sam3d_cam1_kpt2d_map[idx]), dtype=np.float32)
-                sam2_2d = np.asarray(np.load(sam3d_cam2_kpt2d_map[idx]), dtype=np.float32)
-                
+                sam1_2d = np.asarray(
+                    np.load(sam3d_cam1_kpt2d_map[idx]), dtype=np.float32
+                )
+                sam2_2d = np.asarray(
+                    np.load(sam3d_cam2_kpt2d_map[idx]), dtype=np.float32
+                )
+
                 if apply_filtering:
                     if sam1_2d_sel is None:
-                        sam1_2d_sel = self._get_or_build_source_joint_indices(sam1_2d.shape[0])
+                        sam1_2d_sel = self._get_or_build_source_joint_indices(
+                            sam1_2d.shape[0]
+                        )
                     if sam2_2d_sel is None:
-                        sam2_2d_sel = self._get_or_build_source_joint_indices(sam2_2d.shape[0])
+                        sam2_2d_sel = self._get_or_build_source_joint_indices(
+                            sam2_2d.shape[0]
+                        )
                     sam2d_cam1.append(
                         torch.from_numpy(
                             self._filter_keypoints_with_indices(sam1_2d, sam1_2d_sel)
@@ -561,14 +658,22 @@ class LabeledUnityDataset(Dataset):
                     sam2d_cam2.append(torch.from_numpy(sam2_2d))
 
             if self._load_3d_kpt:
-                sam1_3d = np.asarray(np.load(sam3d_cam1_kpt3d_map[idx]), dtype=np.float32)
-                sam2_3d = np.asarray(np.load(sam3d_cam2_kpt3d_map[idx]), dtype=np.float32)
-                
+                sam1_3d = np.asarray(
+                    np.load(sam3d_cam1_kpt3d_map[idx]), dtype=np.float32
+                )
+                sam2_3d = np.asarray(
+                    np.load(sam3d_cam2_kpt3d_map[idx]), dtype=np.float32
+                )
+
                 if apply_filtering:
                     if sam1_3d_sel is None:
-                        sam1_3d_sel = self._get_or_build_source_joint_indices(sam1_3d.shape[0])
+                        sam1_3d_sel = self._get_or_build_source_joint_indices(
+                            sam1_3d.shape[0]
+                        )
                     if sam2_3d_sel is None:
-                        sam2_3d_sel = self._get_or_build_source_joint_indices(sam2_3d.shape[0])
+                        sam2_3d_sel = self._get_or_build_source_joint_indices(
+                            sam2_3d.shape[0]
+                        )
                     sam3d_cam1.append(
                         torch.from_numpy(
                             self._filter_keypoints_with_indices(sam1_3d, sam1_3d_sel)
@@ -585,18 +690,41 @@ class LabeledUnityDataset(Dataset):
                     sam3d_cam2.append(torch.from_numpy(sam2_3d))
 
         src_t = len(common_idx)
-        sel = self._temporal_resample_indices(src_t, src_t)  # No resampling here, will be done in main method
+        sel = self._temporal_resample_indices(
+            src_t, src_t
+        )  # No resampling here, will be done in main method
 
-        cam1_kpt2d_t = torch.stack(cam1_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
-        cam2_kpt2d_t = torch.stack(cam2_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
+        cam1_kpt2d_t = (
+            torch.stack(cam1_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
+        )
+        cam2_kpt2d_t = (
+            torch.stack(cam2_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
+        )
         gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0)[sel] if self._load_3d_kpt else None
-        sam2d_cam1_t = torch.stack(sam2d_cam1, dim=0)[sel] if self._load_2d_kpt else None
-        sam2d_cam2_t = torch.stack(sam2d_cam2, dim=0)[sel] if self._load_2d_kpt else None
-        sam3d_cam1_t = torch.stack(sam3d_cam1, dim=0)[sel] if self._load_3d_kpt else None
-        sam3d_cam2_t = torch.stack(sam3d_cam2, dim=0)[sel] if self._load_3d_kpt else None
+        sam2d_cam1_t = (
+            torch.stack(sam2d_cam1, dim=0)[sel] if self._load_2d_kpt else None
+        )
+        sam2d_cam2_t = (
+            torch.stack(sam2d_cam2, dim=0)[sel] if self._load_2d_kpt else None
+        )
+        sam3d_cam1_t = (
+            torch.stack(sam3d_cam1, dim=0)[sel] if self._load_3d_kpt else None
+        )
+        sam3d_cam2_t = (
+            torch.stack(sam3d_cam2, dim=0)[sel] if self._load_3d_kpt else None
+        )
         frame_indices_t = torch.tensor(common_idx, dtype=torch.long)[sel]
 
-        return cam1_kpt2d_t, cam2_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam2d_cam2_t, sam3d_cam1_t, sam3d_cam2_t, frame_indices_t
+        return (
+            cam1_kpt2d_t,
+            cam2_kpt2d_t,
+            gt_kpt3d_t,
+            sam2d_cam1_t,
+            sam2d_cam2_t,
+            sam3d_cam1_t,
+            sam3d_cam2_t,
+            frame_indices_t,
+        )
 
     def _load_pair_modalities(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Load aligned modalities for one camera-pair sample.
@@ -606,7 +734,7 @@ class LabeledUnityDataset(Dataset):
           - cam1/cam2 2D kpt
           - GT 3D kpt
           - SAM3D pred 3D kpt for cam1/cam2
-          
+
         Supports loading multiple variants (character, pole, ski) if variant dicts are available.
         """
         cam1_frames_dir = Path(item["cam1_frames_dir"])
@@ -623,24 +751,38 @@ class LabeledUnityDataset(Dataset):
         cam1_kpt2d_dirs = item.get("cam1_kpt2d_dirs")  # Dict[str, str]
         cam2_kpt2d_dirs = item.get("cam2_kpt2d_dirs")  # Dict[str, str]
         kpt3d_dirs = item.get("kpt3d_dirs")  # Dict[str, str]
-        
-        has_variants = (cam1_kpt2d_dirs is not None and 
-                       cam2_kpt2d_dirs is not None and 
-                       kpt3d_dirs is not None)
-        
+
+        has_variants = (
+            cam1_kpt2d_dirs is not None
+            and cam2_kpt2d_dirs is not None
+            and kpt3d_dirs is not None
+        )
+
         variants = list(cam1_kpt2d_dirs.keys()) if has_variants else ["default"]
 
-        cam1_frames_map = self._build_idx_file_map(cam1_frames_dir, "frame_*.png") if self._load_frames else {}
-        cam2_frames_map = self._build_idx_file_map(cam2_frames_dir, "frame_*.png") if self._load_frames else {}
+        cam1_frames_map = (
+            self._build_idx_file_map(cam1_frames_dir, "frame_*.png")
+            if self._load_frames
+            else {}
+        )
+        cam2_frames_map = (
+            self._build_idx_file_map(cam2_frames_dir, "frame_*.png")
+            if self._load_frames
+            else {}
+        )
 
         # none_detected_frames.txt is copied to both kpt2d and kpt3d dirs by the export script
-        cam1_none_dir = sam3d_cam1_kpt2d_dir if self._load_2d_kpt else sam3d_cam1_kpt3d_dir
-        cam2_none_dir = sam3d_cam2_kpt2d_dir if self._load_2d_kpt else sam3d_cam2_kpt3d_dir
-        cam1_none_exists, cam1_none_idx, cam1_none_invalid = self._read_none_detected_indices(
-            cam1_none_dir
+        cam1_none_dir = (
+            sam3d_cam1_kpt2d_dir if self._load_2d_kpt else sam3d_cam1_kpt3d_dir
         )
-        cam2_none_exists, cam2_none_idx, cam2_none_invalid = self._read_none_detected_indices(
-            cam2_none_dir
+        cam2_none_dir = (
+            sam3d_cam2_kpt2d_dir if self._load_2d_kpt else sam3d_cam2_kpt3d_dir
+        )
+        cam1_none_exists, cam1_none_idx, cam1_none_invalid = (
+            self._read_none_detected_indices(cam1_none_dir)
+        )
+        cam2_none_exists, cam2_none_idx, cam2_none_invalid = (
+            self._read_none_detected_indices(cam2_none_dir)
         )
         if cam1_none_exists and cam1_none_invalid:
             logger.warning(
@@ -663,12 +805,21 @@ class LabeledUnityDataset(Dataset):
             all_common_set = set(cam1_frames_map) & set(cam2_frames_map)
         if self._load_2d_kpt:
             # Use default (character) variant for frame discovery
-            cam1_kpt2d_map = self._build_idx_file_map(Path(cam1_kpt2d_dirs[variants[0]]) if has_variants else cam1_kpt2d_dir, "kpt2d_*.npy")
-            cam2_kpt2d_map = self._build_idx_file_map(Path(cam2_kpt2d_dirs[variants[0]]) if has_variants else cam2_kpt2d_dir, "kpt2d_*.npy")
+            cam1_kpt2d_map = self._build_idx_file_map(
+                Path(cam1_kpt2d_dirs[variants[0]]) if has_variants else cam1_kpt2d_dir,
+                "kpt2d_*.npy",
+            )
+            cam2_kpt2d_map = self._build_idx_file_map(
+                Path(cam2_kpt2d_dirs[variants[0]]) if has_variants else cam2_kpt2d_dir,
+                "kpt2d_*.npy",
+            )
             cur = set(cam1_kpt2d_map) & set(cam2_kpt2d_map)
             all_common_set = cur if all_common_set is None else all_common_set & cur
         if self._load_3d_kpt:
-            kpt3d_map = self._build_idx_file_map(Path(kpt3d_dirs[variants[0]]) if has_variants else kpt3d_dir, "frame_*.npy")
+            kpt3d_map = self._build_idx_file_map(
+                Path(kpt3d_dirs[variants[0]]) if has_variants else kpt3d_dir,
+                "frame_*.npy",
+            )
             cur = set(kpt3d_map)
             all_common_set = cur if all_common_set is None else all_common_set & cur
         if all_common_set is None:
@@ -680,18 +831,31 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt3d_map: Dict[int, Path] = {}
         sam3d_cam2_kpt3d_map: Dict[int, Path] = {}
         if self._load_2d_kpt:
-            sam3d_cam1_kpt2d_map = self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy")
-            sam3d_cam2_kpt2d_map = self._build_idx_file_map(sam3d_cam2_kpt2d_dir, "kpt2d_*.npy")
+            sam3d_cam1_kpt2d_map = self._build_idx_file_map(
+                sam3d_cam1_kpt2d_dir, "kpt2d_*.npy"
+            )
+            sam3d_cam2_kpt2d_map = self._build_idx_file_map(
+                sam3d_cam2_kpt2d_dir, "kpt2d_*.npy"
+            )
             both_2d = set(sam3d_cam1_kpt2d_map) & set(sam3d_cam2_kpt2d_map)
-            sam_valid_set = both_2d if sam_valid_set is None else sam_valid_set & both_2d
+            sam_valid_set = (
+                both_2d if sam_valid_set is None else sam_valid_set & both_2d
+            )
         if self._load_3d_kpt:
-            sam3d_cam1_kpt3d_map = self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy")
-            sam3d_cam2_kpt3d_map = self._build_idx_file_map(sam3d_cam2_kpt3d_dir, "kpt3d_*.npy")
+            sam3d_cam1_kpt3d_map = self._build_idx_file_map(
+                sam3d_cam1_kpt3d_dir, "kpt3d_*.npy"
+            )
+            sam3d_cam2_kpt3d_map = self._build_idx_file_map(
+                sam3d_cam2_kpt3d_dir, "kpt3d_*.npy"
+            )
             both_3d = set(sam3d_cam1_kpt3d_map) & set(sam3d_cam2_kpt3d_map)
-            sam_valid_set = both_3d if sam_valid_set is None else sam_valid_set & both_3d
+            sam_valid_set = (
+                both_3d if sam_valid_set is None else sam_valid_set & both_3d
+            )
         sam_valid_set = sam_valid_set or set()
         common_idx = [
-            idx for idx in all_common
+            idx
+            for idx in all_common
             if idx in sam_valid_set
             and idx not in cam1_none_set
             and idx not in cam2_none_set
@@ -700,9 +864,12 @@ class LabeledUnityDataset(Dataset):
         if skipped:
             logger.debug(
                 "Skipped %d/%d frames with missing SAM data for %s/%s/%s-%s",
-                skipped, len(all_common),
-                item.get('person_id', '?'), item.get('action_id', '?'),
-                item.get('cam1_id', '?'), item.get('cam2_id', '?'),
+                skipped,
+                len(all_common),
+                item.get("person_id", "?"),
+                item.get("action_id", "?"),
+                item.get("cam1_id", "?"),
+                item.get("cam2_id", "?"),
             )
         if not common_idx:
             missing_sam_idx = [idx for idx in all_common if idx not in sam_valid_set]
@@ -713,10 +880,10 @@ class LabeledUnityDataset(Dataset):
                 "No valid frames after filtering for sample %s/%s/%s-%s. "
                 "Counts: all_common=%d, sam_valid=%d, cam1_none=%d, cam2_none=%d, missing_sam=%d. "
                 "Sample blocked idx (first 20): missing_sam=%s, cam1_none=%s, cam2_none=%s",
-                item.get('person_id', 'unknown'),
-                item.get('action_id', 'unknown'),
-                item.get('cam1_id', 'unknown'),
-                item.get('cam2_id', 'unknown'),
+                item.get("person_id", "unknown"),
+                item.get("action_id", "unknown"),
+                item.get("cam1_id", "unknown"),
+                item.get("cam2_id", "unknown"),
                 len(all_common),
                 len(sam_valid_set),
                 len(cam1_none_set),
@@ -775,7 +942,6 @@ class LabeledUnityDataset(Dataset):
                 f"{item.get('cam1_id', 'unknown')} - {item.get('cam2_id', 'unknown')}"
             )
 
-
         cam1_frames: List[torch.Tensor] = []
         cam2_frames: List[torch.Tensor] = []
 
@@ -828,11 +994,18 @@ class LabeledUnityDataset(Dataset):
                 kpt3d_dir_variant = kpt3d_dir
 
             # Only apply filtering for 'character' variant; pole and ski keep all joints
-            apply_filtering = (variant == "character")
+            apply_filtering = variant == "character"
 
-            (cam1_kpt2d_t, cam2_kpt2d_t, gt_kpt3d_t, 
-             sam2d_cam1_t, sam2d_cam2_t, sam3d_cam1_t, sam3d_cam2_t, 
-             frame_indices_t) = self._load_single_variant_keypoints(
+            (
+                cam1_kpt2d_t,
+                cam2_kpt2d_t,
+                gt_kpt3d_t,
+                sam2d_cam1_t,
+                sam2d_cam2_t,
+                sam3d_cam1_t,
+                sam3d_cam2_t,
+                frame_indices_t,
+            ) = self._load_single_variant_keypoints(
                 cam1_kpt2d_dir=cam1_kpt2d_dir_variant,
                 cam2_kpt2d_dir=cam2_kpt2d_dir_variant,
                 kpt3d_dir=kpt3d_dir_variant,
@@ -896,7 +1069,11 @@ class LabeledUnityDataset(Dataset):
             },
         }
 
-        if self._load_frames and cam1_frames_t is not None and cam2_frames_t is not None:
+        if (
+            self._load_frames
+            and cam1_frames_t is not None
+            and cam2_frames_t is not None
+        ):
             out["frames"] = {
                 "cam1": cam1_frames_t,
                 "cam2": cam2_frames_t,
@@ -906,38 +1083,44 @@ class LabeledUnityDataset(Dataset):
         if self._load_2d_kpt:
             out["kpt2d_gt"] = {}
             out["kpt2d_sam"] = {}
-            
+
             # GT: all variants (character, pole, ski)
             for v in variants:
                 if variant_kpts[v]["cam1_kpt2d"] is not None:
                     out["kpt2d_gt"][f"{v}_cam1"] = variant_kpts[v]["cam1_kpt2d"]
                 if variant_kpts[v]["cam2_kpt2d"] is not None:
                     out["kpt2d_gt"][f"{v}_cam2"] = variant_kpts[v]["cam2_kpt2d"]
-            
+
             # SAM: character only
             if variant_kpts["character"]["sam2d_cam1"] is not None:
-                out["kpt2d_sam"]["character_cam1"] = variant_kpts["character"]["sam2d_cam1"]
+                out["kpt2d_sam"]["character_cam1"] = variant_kpts["character"][
+                    "sam2d_cam1"
+                ]
             if variant_kpts["character"]["sam2d_cam2"] is not None:
-                out["kpt2d_sam"]["character_cam2"] = variant_kpts["character"]["sam2d_cam2"]
+                out["kpt2d_sam"]["character_cam2"] = variant_kpts["character"][
+                    "sam2d_cam2"
+                ]
 
         if self._load_3d_kpt:
             out["kpt3d_gt"] = {}
             out["kpt3d_sam"] = {}
-            
+
             # GT: all variants (character, pole, ski)
             for v in variants:
                 if variant_kpts[v]["gt_kpt3d"] is not None:
                     out["kpt3d_gt"][v] = variant_kpts[v]["gt_kpt3d"]
-            
+
             # SAM: character only
             if variant_kpts["character"]["sam3d_cam1"] is not None:
-                out["kpt3d_sam"]["character_cam1"] = variant_kpts["character"]["sam3d_cam1"]
+                out["kpt3d_sam"]["character_cam1"] = variant_kpts["character"][
+                    "sam3d_cam1"
+                ]
             if variant_kpts["character"]["sam3d_cam2"] is not None:
-                out["kpt3d_sam"]["character_cam2"] = variant_kpts["character"]["sam3d_cam2"]
+                out["kpt3d_sam"]["character_cam2"] = variant_kpts["character"][
+                    "sam3d_cam2"
+                ]
 
         return out
-
-
 
     def _apply_transform(self, video_tchw: torch.Tensor) -> torch.Tensor:
         """
@@ -967,7 +1150,7 @@ class LabeledUnityDataset(Dataset):
 
 def whole_video_dataset(
     experiment: str,
-    dataset_idx: List[Any],
+    dataset_idx: List[UnityDataConfig],
     transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     load_frames: bool = True,
     load_2d_kpt: bool = True,

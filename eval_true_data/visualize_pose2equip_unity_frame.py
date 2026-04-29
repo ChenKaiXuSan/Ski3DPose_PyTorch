@@ -22,10 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from project.dataloader.whole_video_dataset import LabeledUnityDataset
+from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
 from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS
 from project.models.pose2equip import Pose2EquipNet
-
 
 EQUIP_LABELS = [
     "left_ski_tip",
@@ -46,7 +45,9 @@ def _extract_float_token(token: str) -> Optional[float]:
         return None
 
 
-def _parse_ckpt_name(ckpt_name: str) -> Optional[Tuple[int, Optional[float], Optional[float]]]:
+def _parse_ckpt_name(
+    ckpt_name: str,
+) -> Optional[Tuple[int, Optional[float], Optional[float]]]:
     # epoch-loss-mpjpe.ckpt or epoch-loss.ckpt
     m = re.match(r"^(\d+)-([^\-]+)(?:-([^\-]+))?\.ckpt$", ckpt_name)
     if not m:
@@ -64,7 +65,9 @@ def _select_best_ckpt(ckpt_dir: Path) -> Path:
     if not all_ckpts:
         raise FileNotFoundError(f"No checkpoint found in {ckpt_dir}")
 
-    candidates = [p for p in all_ckpts if p.name.lower() not in {"last.ckpt", "last-v1.ckpt"}]
+    candidates = [
+        p for p in all_ckpts if p.name.lower() not in {"last.ckpt", "last-v1.ckpt"}
+    ]
     if not candidates:
         for name in ["last.ckpt", "last-v1.ckpt"]:
             p = ckpt_dir / name
@@ -119,11 +122,17 @@ def _read_rgb(path: Path) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-def _frame_to_model_tensor(frame_rgb: np.ndarray, image_size: int, device: torch.device) -> torch.Tensor:
-    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(2, 0, 1)
+def _frame_to_model_tensor(
+    frame_rgb: np.ndarray, image_size: int, device: torch.device
+) -> torch.Tensor:
+    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(
+        2, 0, 1
+    )
     x = x / 255.0
     x = x.unsqueeze(0)
-    x = F.interpolate(x, size=(image_size, image_size), mode="bilinear", align_corners=False)
+    x = F.interpolate(
+        x, size=(image_size, image_size), mode="bilinear", align_corners=False
+    )
     return x.to(device)
 
 
@@ -143,7 +152,9 @@ def _to_model_joint_count(human_3d: np.ndarray, expected_joints: int) -> np.ndar
 
 
 def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
-    ax.scatter(human_3d[:, 0], human_3d[:, 1], human_3d[:, 2], s=10, c="tab:blue", alpha=0.7)
+    ax.scatter(
+        human_3d[:, 0], human_3d[:, 1], human_3d[:, 2], s=10, c="tab:blue", alpha=0.7
+    )
 
     edges: List[Tuple[int, int]] = []
     for a, b in SKELETON_CONNECTIONS:
@@ -163,7 +174,9 @@ def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
 
 
 def _draw_equipment_3d(ax, pred_obj: np.ndarray) -> None:
-    ax.scatter(pred_obj[:, 0], pred_obj[:, 1], pred_obj[:, 2], s=18, c="tab:red", alpha=0.95)
+    ax.scatter(
+        pred_obj[:, 0], pred_obj[:, 1], pred_obj[:, 2], s=18, c="tab:red", alpha=0.95
+    )
 
     segments = [
         (0, 1),  # left ski
@@ -222,7 +235,9 @@ def _render_one_figure(
     plt.close(fig)
 
 
-def _load_pose2equip_from_ckpt(ckpt_path: Path, cfg: Any, device: torch.device) -> Pose2EquipNet:
+def _load_pose2equip_from_ckpt(
+    ckpt_path: Path, cfg: Any, device: torch.device
+) -> Pose2EquipNet:
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     state_dict = ckpt.get("state_dict", ckpt)
 
@@ -267,13 +282,17 @@ def main() -> None:
     parser.add_argument(
         "--ckpt-dir",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-04-28/fold_0/checkpoints"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-04-29/fold_0/checkpoints/fold_0"
+        ),
         help="Checkpoint directory containing *.ckpt",
     )
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/configs/train.yaml"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/configs/train.yaml"
+        ),
         help="Hydra train.yaml path",
     )
     parser.add_argument(
@@ -316,7 +335,9 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip_true_frame"),
+        default=Path(
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip_unity_frame"
+        ),
         help="Output root directory",
     )
     args = parser.parse_args()
@@ -378,7 +399,9 @@ def main() -> None:
         action_id = str(sample_dict.get("action_id", "unknown"))
         cam1_id = str(sample_dict.get("cam1_id", "unknown"))
         cam2_id = str(sample_dict.get("cam2_id", "unknown"))
-        sample_tag = f"sample_{sample_idx:03d}_{person_id}_{action_id}_{cam1_id}_{cam2_id}"
+        sample_tag = (
+            f"sample_{sample_idx:03d}_{person_id}_{action_id}_{cam1_id}_{cam2_id}"
+        )
 
         sample_out = run_out / sample_tag
         vis_dir = sample_out / "vis"
@@ -395,7 +418,9 @@ def main() -> None:
             human_3d = _to_model_joint_count(human_3d_raw, expected_joints)
 
             human_3d_t = torch.from_numpy(human_3d).unsqueeze(0).to(device)
-            frame_t = _frame_to_model_tensor(frame_rgb, image_size=image_size, device=device)
+            frame_t = _frame_to_model_tensor(
+                frame_rgb, image_size=image_size, device=device
+            )
 
             with torch.no_grad():
                 out = model(human_3d=human_3d_t, human_frame=frame_t)
