@@ -45,33 +45,11 @@ from project.map_config import UnityDataConfig
 # select different experiment trainer
 #####################################
 # baseline
-from project.trainer.train_fusion_SSM import FusionSSMTrainer
+from project.trainer.train_dual2pose import Dual2PoseTrainer
 from project.trainer.train_pose2equip import Pose2EquipTrainer
 
 logger = logging.getLogger(__name__)
 
-
-def _select_variant_dir_from_item(
-    item: Dict[str, object],
-    direct_key: str,
-    dirs_key: str,
-    preferred_variant: str = "character",
-) -> str:
-    direct_value = item.get(direct_key)
-    if direct_value:
-        return str(direct_value)
-
-    variant_dirs = item.get(dirs_key)
-    if isinstance(variant_dirs, dict):
-        if preferred_variant in variant_dirs:
-            return str(variant_dirs[preferred_variant])
-        if variant_dirs:
-            first_key = sorted(str(k) for k in variant_dirs.keys())[0]
-            return str(variant_dirs[first_key])
-
-    raise KeyError(
-        f"Missing both '{direct_key}' and usable '{dirs_key}' in index item."
-    )
 
 
 def load_fold_dataset_idx_from_fold_json(
@@ -101,46 +79,8 @@ def load_fold_dataset_idx_from_fold_json(
     # 处理三种split
     for split in ["train", "val", "test"]:
         src_list = fold_data.get(split, [])
-
         for item in src_list:
-            cam1_kpt2d_dir = _select_variant_dir_from_item(
-                item, "cam1_kpt2d_dir", "cam1_kpt2d_dirs"
-            )
-            cam2_kpt2d_dir = _select_variant_dir_from_item(
-                item, "cam2_kpt2d_dir", "cam2_kpt2d_dirs"
-            )
-            kpt3d_dir = _select_variant_dir_from_item(item, "kpt3d_dir", "kpt3d_dirs")
-            dataset_idx[split].append(
-                UnityDataConfig(
-                    person_id=item["person_id"],
-                    action_id=item["action_id"],
-                    cam1_id=item["cam1_id"],
-                    cam2_id=item["cam2_id"],
-                    cam1_path=str(item["cam1_path"]),
-                    cam2_path=str(item["cam2_path"]),
-                    label_path=str(item["label_path"]),
-                    cam1_frames_dir=str(item["cam1_frames_dir"]),
-                    cam2_frames_dir=str(item["cam2_frames_dir"]),
-                    cam1_kpt2d_dirs=item.get("cam1_kpt2d_dirs"),
-                    cam2_kpt2d_dirs=item.get("cam2_kpt2d_dirs"),
-                    cam1_kpt2d_dir=cam1_kpt2d_dir,
-                    cam2_kpt2d_dir=cam2_kpt2d_dir,
-                    kpt3d_dirs=item.get("kpt3d_dirs"),
-                    kpt3d_dir=kpt3d_dir,
-                    sam3d_cam1_kpt2d_dir=str(item["sam3d_cam1_kpt2d_dir"]),
-                    sam3d_cam2_kpt2d_dir=str(item["sam3d_cam2_kpt2d_dir"]),
-                    sam3d_cam1_kpt3d_dir=str(item["sam3d_cam1_kpt3d_dir"]),
-                    sam3d_cam2_kpt3d_dir=str(item["sam3d_cam2_kpt3d_dir"]),
-                    sam3_cam1_mask_ski_dir=str(
-                        item.get("sam3_cam1_mask_ski_dir") or ""
-                    ),
-                    sam3_cam2_mask_ski_pole_dir=str(
-                        item.get("sam3_cam2_mask_ski_pole_dir") or ""
-                    ),
-                    sequence_meta_path=str(item["sequence_meta_path"]),
-                    joint_names_path=str(item["joint_names_path"]),
-                )
-            )
+            dataset_idx[split].append(UnityDataConfig.from_dict(item))
 
     logger.info(
         f"✓ Loaded fold {fold}: train={len(dataset_idx['train'])}, val={len(dataset_idx['val'])}, test={len(dataset_idx['test'])}"
@@ -170,7 +110,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     if hparams.train.view == "multi":
         if hparams.model.backbone == "3dcnn":
             if hparams.model.fuse_method in ["ssm", "mamba", "mamba_ssm"]:
-                classification_module = FusionSSMTrainer(hparams)
+                classification_module = Dual2PoseTrainer(hparams)
                 monitor_metric = "val/loss"
                 monitor_mode = "min"
                 ckpt_filename = "{epoch}-{val/loss:.4f}"

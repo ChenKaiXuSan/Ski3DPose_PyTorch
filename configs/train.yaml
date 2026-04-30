@@ -49,6 +49,7 @@ data:
   load_frames: true # whether to load video frames
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
+  load_mask: true
 
   batch_size: 4
 
@@ -74,7 +75,8 @@ pose2equip:
 
   weight_decay: 0.01
   loss_w_attach: 0.1
-  loss_w_len: 0.05
+  loss_w_len: 0.02
+  loss_w_sym: 0.03
 
   # 这里应该是过滤之后的idx
   left_ankle_idx: 10

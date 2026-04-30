@@ -61,6 +61,13 @@ class Pose2EquipNet(nn.Module):
         self.right_wrist_idx = right_wrist_idx
 
         self.pose_encoder = PoseEncoder(num_joints, hidden_dim)
+
+        # Fuse RGB + two equipment masks into a 3-channel tensor for ResNet.
+        self.mask_fuse = nn.Sequential(
+            nn.Conv2d(5, 16, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 3, kernel_size=1),
+        )
         
         _resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
         self.frame_encoder = nn.Sequential(*list(_resnet.children())[:-1])  # output: [B, 512, 1, 1]
@@ -75,7 +82,12 @@ class Pose2EquipNet(nn.Module):
         self.dir_head = nn.Linear(hidden_dim, 4 * 3)
         self.len_head = nn.Linear(hidden_dim, 4)
 
-    def _encode_frame(self, human_frame: torch.Tensor) -> torch.Tensor:
+    def _encode_frame(
+        self,
+        human_frame: torch.Tensor,
+        pole_mask: torch.Tensor | None = None,
+        ski_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # human_frame: [B, C, H, W]
         if human_frame.ndim != 4:
             raise ValueError(
@@ -89,18 +101,58 @@ class Pose2EquipNet(nn.Module):
                 f"Expected human_frame channels in (1,3), got {human_frame.shape[1]}"
             )
 
-        frame_feat = self.frame_encoder(human_frame).flatten(1)
+        b, _, h, w = human_frame.shape
+        if pole_mask is None:
+            pole_mask = human_frame.new_zeros((b, 1, h, w))
+        if ski_mask is None:
+            ski_mask = human_frame.new_zeros((b, 1, h, w))
+
+        if pole_mask.ndim != 4 or pole_mask.shape[1] != 1:
+            raise ValueError(
+                f"Expected pole_mask shape [B,1,H,W], got {tuple(pole_mask.shape)}"
+            )
+        if ski_mask.ndim != 4 or ski_mask.shape[1] != 1:
+            raise ValueError(
+                f"Expected ski_mask shape [B,1,H,W], got {tuple(ski_mask.shape)}"
+            )
+        if pole_mask.shape[0] != b or ski_mask.shape[0] != b:
+            raise ValueError(
+                "Mask/frame batch mismatch: "
+                f"frame={b}, pole={pole_mask.shape[0]}, ski={ski_mask.shape[0]}"
+            )
+        if pole_mask.shape[-2:] != (h, w) or ski_mask.shape[-2:] != (h, w):
+            raise ValueError(
+                "Mask/frame spatial mismatch: "
+                f"frame={(h, w)}, pole={tuple(pole_mask.shape[-2:])}, ski={tuple(ski_mask.shape[-2:])}"
+            )
+
+        # 5-channel input: [RGB, pole_mask, ski_mask]
+        fused_input = torch.cat([human_frame, pole_mask, ski_mask], dim=1)
+        fused_rgb = self.mask_fuse(fused_input)
+
+        frame_feat = self.frame_encoder(fused_rgb).flatten(1)
         frame_feat = self.frame_proj(frame_feat)
         return frame_feat
 
-    def forward(self, human_3d: torch.Tensor, human_frame: torch.Tensor):
+    def forward(
+        self,
+        human_3d: torch.Tensor,
+        human_frame: torch.Tensor,
+        pole_mask: torch.Tensor | None = None,
+        ski_mask: torch.Tensor | None = None,
+    ):
         # human_3d: [B, J, 3]
         # human_frame: [B, C, H, W]
+        # pole_mask/ski_mask: [B, 1, H, W]
 
         equip_feat = self.pose_encoder(human_3d)
         b, _, _ = human_3d.shape
 
-        frame_feat = self._encode_frame(human_frame)
+        frame_feat = self._encode_frame(
+            human_frame=human_frame,
+            pole_mask=pole_mask,
+            ski_mask=ski_mask,
+        )
         if frame_feat.shape[0] != b:
             raise ValueError(
                 f"Batch mismatch between pose and frame: {b} vs {frame_feat.shape[0]}"

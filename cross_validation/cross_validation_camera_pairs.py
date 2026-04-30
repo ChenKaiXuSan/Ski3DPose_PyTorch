@@ -23,54 +23,16 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, asdict, fields
 from itertools import combinations
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from project.map_config import UnityDataConfig
 
 import numpy as np
 from sklearn.model_selection import KFold
-
 KPT_VARIANTS = ("character", "pole", "ski")
 CAPTURE_NAME_PATTERN = re.compile(r"^capture_L(\d+)_A(\d+)$")
-
-
-@dataclass
-class CameraPairSample:
-    """表示一个训练样本：人物 + 动作 + 摄像头对"""
-
-    person_id: str  # "01", "02"
-    action_id: str  # "action_01", "action_02", ..., "action_12"
-    cam1_id: str  # "cam_001", "cam_002", ..., "cam_108"
-    cam2_id: str  # "cam_001", "cam_002", ..., "cam_108"
-    cam1_path: Optional[str] = None  # 兼容旧字段：camera1 frames目录
-    cam2_path: Optional[str] = None  # 兼容旧字段：camera2 frames目录
-    label_path: Optional[str] = None  # 兼容旧字段：sequence.json路径
-    cam1_frames_dir: Optional[str] = None
-    cam2_frames_dir: Optional[str] = None
-    cam1_kpt2d_dirs: Optional[Dict[str, str]] = None
-    cam2_kpt2d_dirs: Optional[Dict[str, str]] = None
-
-    kpt3d_dirs: Optional[Dict[str, str]] = None
-
-    sam3d_cam1_kpt2d_dir: Optional[str] = None
-    sam3d_cam2_kpt2d_dir: Optional[str] = None
-
-    sam3d_cam1_kpt3d_dir: Optional[str] = None
-    sam3d_cam2_kpt3d_dir: Optional[str] = None
-
-    # 从sam3的到的mask
-    sam3_cam1_mask_ski_dir: Optional[str] = None
-    sam3_cam2_mask_ski_pole_dir: Optional[str] = None
-
-    sequence_meta_path: Optional[str] = None
-    joint_names_path: Optional[str] = None
-
-    def to_dict(self):
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: Dict):
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 class CameraPairCrossValidation:
@@ -241,14 +203,14 @@ class CameraPairCrossValidation:
                 people_actions[person_dir.name] = action_names
         return people_actions
 
-    def build_all_samples(self) -> List[CameraPairSample]:
+    def build_all_samples(self) -> List[UnityDataConfig]:
         """
         扫描真实目录，构建样本：person × action × camera_capture_pairs
 
         Returns:
             所有样本的列表
         """
-        samples: List[CameraPairSample] = []
+        samples: List[UnityDataConfig] = []
         people_actions = self._discover_people_actions()
 
         action_count_total = 0
@@ -309,16 +271,23 @@ class CameraPairCrossValidation:
                     sequence_meta = meta_dir / "sequence.json"
                     joint_meta = meta_dir / "joint_names.json"
 
-                    sample = CameraPairSample(
+                    cam1_kpt2d_dir = self._select_default_variant_dir(kpt2d_cam1_dirs, kpt2d_cam1)
+                    cam2_kpt2d_dir = self._select_default_variant_dir(kpt2d_cam2_dirs, kpt2d_cam2)
+                    kpt3d_resolved = self._select_default_variant_dir(kpt3d_dirs, kpt3d_dir)
+
+                    sample = UnityDataConfig(
                         person_id=person_id,
                         action_id=action_id,
                         cam1_id=cam1_id,
                         cam2_id=cam2_id,
-                        cam1_path=self._to_abs_path(cam1_dir),
-                        cam2_path=self._to_abs_path(cam2_dir),
                         label_path=self._to_abs_path(sequence_meta),
                         cam1_frames_dir=self._to_abs_path(cam1_dir),
                         cam2_frames_dir=self._to_abs_path(cam2_dir),
+                        sequence_meta_path=self._to_abs_path(sequence_meta),
+                        joint_names_path=self._to_abs_path(joint_meta),
+                        cam1_kpt2d_dir=cam1_kpt2d_dir,
+                        cam2_kpt2d_dir=cam2_kpt2d_dir,
+                        kpt3d_dir=kpt3d_resolved,
                         cam1_kpt2d_dirs=kpt2d_cam1_dirs or None,
                         cam2_kpt2d_dirs=kpt2d_cam2_dirs or None,
                         kpt3d_dirs=kpt3d_dirs or None,
@@ -328,8 +297,6 @@ class CameraPairCrossValidation:
                         sam3d_cam2_kpt3d_dir=self._to_abs_path(sam3d_cam2_kpt3d),
                         sam3_cam1_mask_ski_dir=self._to_abs_path(sam3_cam1_mask_ski_dir),
                         sam3_cam2_mask_ski_pole_dir=self._to_abs_path(sam3_cam2_mask_ski_pole_dir),
-                        sequence_meta_path=self._to_abs_path(sequence_meta),
-                        joint_names_path=self._to_abs_path(joint_meta),
                     )
                     samples.append(sample)
 
@@ -351,7 +318,7 @@ class CameraPairCrossValidation:
         return samples
 
     def split_by_person(
-        self, samples: List[CameraPairSample]
+        self, samples: List[UnityDataConfig]
     ) -> Dict[int, Dict[str, Any]]:
         """
         策略1: 按人物划分 (Leave-One-Person-Out with train/val/test split)
@@ -434,7 +401,7 @@ class CameraPairCrossValidation:
         return fold_dict
 
     def split_by_action(
-        self, samples: List[CameraPairSample]
+        self, samples: List[UnityDataConfig]
     ) -> Dict[int, Dict[str, Any]]:
         """
         策略2: 按动作划分 (K-Fold on actions with train/val/test split)
@@ -504,7 +471,7 @@ class CameraPairCrossValidation:
         return fold_dict
 
     def split_by_camera_pair(
-        self, samples: List[CameraPairSample]
+        self, samples: List[UnityDataConfig]
     ) -> Dict[int, Dict[str, Any]]:
         """
         策略3: 按摄像头对划分（每个fold内按7/2/1切分train/val/test）
@@ -680,10 +647,10 @@ class CameraPairCrossValidation:
         for fold_idx_str, fold_data in serialized.items():
             fold_idx = int(fold_idx_str)
             fold_dict[fold_idx] = {
-                "train": [CameraPairSample.from_dict(d) for d in fold_data["train"]],
-                "val": [CameraPairSample.from_dict(d) for d in fold_data["val"]],
+                "train": [UnityDataConfig.from_dict(d) for d in fold_data["train"]],
+                "val": [UnityDataConfig.from_dict(d) for d in fold_data["val"]],
                 "test": [
-                    CameraPairSample.from_dict(d) for d in fold_data.get("test", [])
+                    UnityDataConfig.from_dict(d) for d in fold_data.get("test", [])
                 ],
             }
             # 恢复额外信息

@@ -11,7 +11,7 @@ from pytorch_lightning import LightningModule
 
 from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS
 from project.models import FusionSSM, PoseLossWeights, PoseRefineLoss
-from project.models.video_to_pose import SimpleVideo2Pose
+from project.models.dual2pose_net import Dual2PoseNet
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def _build_target_bone_edges() -> List[Tuple[int, int]]:
     return edges
 
 
-class FusionSSMTrainer(LightningModule):
+class Dual2PoseTrainer(LightningModule):
     """Pose fusion trainer with separate models for character, pole, and ski variants."""
 
     def __init__(self, hparams) -> None:
@@ -34,11 +34,13 @@ class FusionSSMTrainer(LightningModule):
 
         self.lr = float(getattr(hparams.loss, "lr", 1e-4))
         self.weight_decay = float(getattr(hparams.loss, "weight_decay", 1e-4))
+        self.lambda_view_recon = float(getattr(hparams.loss, "lambda_view_recon", 0.05))
 
         model_cfg = getattr(hparams, "model", None)
         d_model = int(getattr(model_cfg, "d_model", 256))
         n_layers = int(getattr(model_cfg, "n_layers", 4))
-        use_conf = bool(getattr(model_cfg, "use_conf", True))
+        # Default to confidence-free reliability modeling.
+        use_conf = bool(getattr(model_cfg, "use_conf", False))
         predict_logvar = bool(getattr(model_cfg, "predict_logvar", False))
 
         # Number of joints for each variant (from data)
@@ -59,17 +61,17 @@ class FusionSSMTrainer(LightningModule):
             use_conf=use_conf,
             predict_logvar=predict_logvar,
         )
-        
+
         # Create Video2Pose models for pole and ski
-        self.models["pole"] = SimpleVideo2Pose(
+        self.models["pole"] = Dual2PoseNet(
             num_joints=num_joints_by_variant["pole"],
             hidden_dim=max(64, d_model // 4),
         )
-        self.models["ski"] = SimpleVideo2Pose(
+        self.models["ski"] = Dual2PoseNet(
             num_joints=num_joints_by_variant["ski"],
             hidden_dim=max(64, d_model // 4),
         )
-        
+
         logger.info(
             f"Created models: "
             f"character=FusionSSM({num_joints_by_variant['character']}), "
@@ -85,7 +87,7 @@ class FusionSSMTrainer(LightningModule):
             agree=float(getattr(hparams.loss, "lambda_agree", 0.1)),
             bone_stab=float(getattr(hparams.loss, "lambda_bone_stab", 0.05)),
         )
-        
+
         # Create loss function only for character (has skeleton)
         self.loss_fns = torch.nn.ModuleDict()
         self.loss_fns["character"] = PoseRefineLoss(
@@ -93,10 +95,32 @@ class FusionSSMTrainer(LightningModule):
             weights=weights,
         )
         # pole and ski GT data is stored but not used for model training
-        
+
         self.save_root = str(getattr(hparams, "log_path", "./logs"))
         self.test_outputs: List[Dict[str, Any]] = []
         self.test_save_dir: Path = Path(self.save_root) / "pose_analysis"
+
+        logger.info(
+            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s",
+            use_conf,
+            predict_logvar,
+        )
+
+    @staticmethod
+    def _temporal_velocity_norm(x: torch.Tensor) -> torch.Tensor:
+        """Mean first-order temporal difference norm for (B,T,J,3)."""
+        if x.ndim != 4 or x.shape[1] <= 1:
+            return x.new_tensor(0.0)
+        vel = x[:, 1:] - x[:, :-1]
+        return torch.norm(vel, dim=-1).mean()
+
+    @staticmethod
+    def _temporal_acceleration_norm(x: torch.Tensor) -> torch.Tensor:
+        """Mean second-order temporal difference norm for (B,T,J,3)."""
+        if x.ndim != 4 or x.shape[1] <= 2:
+            return x.new_tensor(0.0)
+        acc = x[:, 2:] - 2.0 * x[:, 1:-1] + x[:, :-2]
+        return torch.norm(acc, dim=-1).mean()
 
     @staticmethod
     def _require_pose(batch: Dict[str, Any], path: Sequence[str]) -> torch.Tensor:
@@ -115,9 +139,15 @@ class FusionSSMTrainer(LightningModule):
         return cur.float()
 
     @staticmethod
-    def _get_variant_data(batch: Dict[str, Any], variant: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    def _get_variant_data(batch: Dict[str, Any], variant: str) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
         """Extract SAM, GT data, and frames for a specific variant.
-        
+
         Returns:
             Tuple of (p_left, p_right, p_gt, frames_left, frames_right) where:
                 - p_left, p_right: SAM 3D predictions
@@ -126,24 +156,32 @@ class FusionSSMTrainer(LightningModule):
         """
         # SAM data is only available for character variant
         if variant == "character":
-            if "character_cam1" not in batch["kpt3d_sam"] or "character_cam2" not in batch["kpt3d_sam"]:
-                raise KeyError(f"SAM data missing for character: {list(batch['kpt3d_sam'].keys())}")
+            if (
+                "character_cam1" not in batch["kpt3d_sam"]
+                or "character_cam2" not in batch["kpt3d_sam"]
+            ):
+                raise KeyError(
+                    f"SAM data missing for character: {list(batch['kpt3d_sam'].keys())}"
+                )
             p_left = batch["kpt3d_sam"]["character_cam1"].float()
             p_right = batch["kpt3d_sam"]["character_cam2"].float()
         else:
             # For pole and ski, no SAM data, use character SAM as fallback
-            if "character_cam1" not in batch["kpt3d_sam"] or "character_cam2" not in batch["kpt3d_sam"]:
+            if (
+                "character_cam1" not in batch["kpt3d_sam"]
+                or "character_cam2" not in batch["kpt3d_sam"]
+            ):
                 raise KeyError(f"Character SAM data missing as fallback for {variant}")
             p_left = batch["kpt3d_sam"]["character_cam1"].float()
             p_right = batch["kpt3d_sam"]["character_cam2"].float()
-        
+
         # Validate shape
         for p in [p_left, p_right]:
             if p.ndim != 4 or p.shape[-1] != 3:
                 raise ValueError(
                     f"Expected pose tensor shape (B,T,J,3) for {variant}, got {tuple(p.shape)}"
                 )
-        
+
         # GT data
         p_gt = None
         if "kpt3d_gt" in batch and isinstance(batch["kpt3d_gt"], dict):
@@ -153,7 +191,7 @@ class FusionSSMTrainer(LightningModule):
                     raise ValueError(
                         f"Expected GT shape (B,T,J,3) for {variant}, got {tuple(p_gt.shape)}"
                     )
-        
+
         # Frame data (video frames)
         frames_left = None
         frames_right = None
@@ -162,33 +200,53 @@ class FusionSSMTrainer(LightningModule):
                 frames_left = batch["frames"]["cam1"].float()
             if "cam2" in batch["frames"]:
                 frames_right = batch["frames"]["cam2"].float()
-        
+
         return p_left, p_right, p_gt, frames_left, frames_right
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         """Process all variants:
         - character: FusionSSM with SAM predictions (2 views of 3D poses)
         - pole, ski: Video2Pose with frame inputs
-        
+
         Returns:
             Total loss.
         """
         total_loss = 0.0
         variant_results: Dict[str, Any] = {}
-        
+
         # ===== CHARACTER: FusionSSM with SAM =====
         try:
-            p_left, p_right, p_gt, frames_left, frames_right = self._get_variant_data(batch, "character")
-            
+            p_left, p_right, p_gt, frames_left, frames_right = self._get_variant_data(
+                batch, "character"
+            )
+
             model = self.models["character"]
             loss_fn = self.loss_fns["character"]
-            
+
             # Forward pass
             out = model(p_left=p_left, p_right=p_right)
             p_hat = out["p_hat"]
+            p0 = out["p0"]
             alpha = out["alpha"]
             logvar = out.get("logvar", None)
-            
+
+            # Reconstruct left/right poses from fused pose + reliability weight.
+            # With delta = (p_left - p_right):
+            #   p_hat = alpha * p_left_recon + (1-alpha) * p_right_recon
+            #   p_left_recon - p_right_recon = delta
+            delta_lr = p_left - p_right
+            p_left_recon = p_hat + (1.0 - alpha) * delta_lr
+            p_right_recon = p_hat - alpha * delta_lr
+
+            loss_recon_left = torch.nn.functional.l1_loss(p_left_recon, p_left)
+            loss_recon_right = torch.nn.functional.l1_loss(p_right_recon, p_right)
+            loss_view_recon = 0.5 * (loss_recon_left + loss_recon_right)
+
+            # Reliability diagnostics: cross-view discrepancy and temporal stability.
+            cv_gap = torch.norm(p_left - p_right, dim=-1).mean()
+            vel_norm = self._temporal_velocity_norm(p_hat)
+            acc_norm = self._temporal_acceleration_norm(p_hat)
+
             # Compute loss
             if p_gt is not None:
                 loss_dict = loss_fn(p_hat=p_hat, p_gt=p_gt, logvar=logvar)
@@ -208,10 +266,10 @@ class FusionSSMTrainer(LightningModule):
                     p_right=p_right,
                     alpha=alpha,
                 )
-            
-            loss = loss_dict["loss"]
+
+            loss = loss_dict["loss"] + self.lambda_view_recon * loss_view_recon
             total_loss = total_loss + loss
-            
+
             # Log loss components
             self.log(
                 f"{stage}/character/loss",
@@ -230,7 +288,7 @@ class FusionSSMTrainer(LightningModule):
                         on_epoch=True,
                         batch_size=p_hat.shape[0],
                     )
-            
+
             # Log alpha statistics
             self.log(
                 f"{stage}/character/alpha_mean",
@@ -246,13 +304,64 @@ class FusionSSMTrainer(LightningModule):
                 on_epoch=True,
                 batch_size=p_hat.shape[0],
             )
-            
+            self.log(
+                f"{stage}/character/cross_view_gap",
+                cv_gap,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/vel_norm",
+                vel_norm,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/acc_norm",
+                acc_norm,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/recon_left",
+                loss_recon_left,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/recon_right",
+                loss_recon_right,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/recon_view",
+                loss_view_recon,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/p0_drift",
+                torch.nn.functional.l1_loss(p_hat, p0),
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+
             # Store results
             variant_results["character"] = {
                 "p_hat": p_hat,
                 "alpha": alpha,
                 "p_left": p_left,
                 "p_right": p_right,
+                "p_left_recon": p_left_recon,
+                "p_right_recon": p_right_recon,
                 "logvar": logvar,
             }
             if p_gt is not None:
@@ -261,37 +370,45 @@ class FusionSSMTrainer(LightningModule):
                 variant_results["character"]["frames_cam1"] = frames_left
             if frames_right is not None:
                 variant_results["character"]["frames_cam2"] = frames_right
-                
+
         except KeyError as e:
             logger.warning(f"Skipping character: {e}")
-        
+
         # ===== POLE & SKI: Video2Pose with frames =====
         for variant in ["pole", "ski"]:
             try:
-                _, _, p_gt, frames_left, frames_right = self._get_variant_data(batch, variant)
-                
+                _, _, p_gt, frames_left, frames_right = self._get_variant_data(
+                    batch, variant
+                )
+
                 if frames_left is None or frames_right is None:
                     logger.warning(f"Skipping {variant}: no frame data")
                     continue
-                
+
                 model = self.models[variant]
-                
-                # Forward pass on frames (average both views or use them separately)
-                # For simplicity, use left view frames
-                # Convert frames format if needed: (B*T, H, W, 3) -> (B*T, 3, H, W)
-                if frames_left.shape[-1] == 3 and frames_left.ndim == 4:
-                    frames_input = frames_left.permute(0, 3, 1, 2)  # (B*T, 3, H, W)
-                else:
-                    frames_input = frames_left
-                
-                p_hat = model(frames_input)  # (B*T, 1, J, 3)
-                
+
+                # Standard video layout after collate: (B,C,T,H,W)
+                if frames_left.ndim != 5:
+                    raise ValueError(
+                        f"Expected frames shape (B,C,T,H,W), got {tuple(frames_left.shape)}"
+                    )
+                frames_input = frames_left.permute(0, 2, 1, 3, 4)  # (B,T,C,H,W)
+                p_hat = model(frames_input)
+                if p_hat.ndim != 4 or p_hat.shape[1] != 1:
+                    raise ValueError(
+                        f"Expected model output shape (B*T,1,J,3), got {tuple(p_hat.shape)}"
+                    )
+                bsz, t_steps = frames_left.shape[0], frames_left.shape[2]
+                p_hat = p_hat.squeeze(1).reshape(
+                    bsz, t_steps, p_hat.shape[-2], p_hat.shape[-1]
+                )
+
                 # Compute loss if GT available
                 if p_gt is not None:
                     # Simple L1 loss for now (no bone/temporal losses for pole/ski)
                     loss = torch.nn.functional.l1_loss(p_hat, p_gt)
                     total_loss = total_loss + loss
-                    
+
                     self.log(
                         f"{stage}/{variant}/loss",
                         loss,
@@ -300,7 +417,7 @@ class FusionSSMTrainer(LightningModule):
                         prog_bar=True,
                         batch_size=p_hat.shape[0],
                     )
-                    
+
                     mpjpe = torch.norm(p_hat - p_gt, dim=-1).mean()
                     self.log(
                         f"{stage}/{variant}/mpjpe",
@@ -310,7 +427,7 @@ class FusionSSMTrainer(LightningModule):
                         prog_bar=False,
                         batch_size=p_hat.shape[0],
                     )
-                
+
                 # Store results
                 variant_results[variant] = {
                     "p_hat": p_hat,
@@ -321,13 +438,13 @@ class FusionSSMTrainer(LightningModule):
                     variant_results[variant]["frames_cam1"] = frames_left
                 if frames_right is not None:
                     variant_results[variant]["frames_cam2"] = frames_right
-                    
+
             except KeyError as e:
                 logger.warning(f"Skipping {variant}: {e}")
-        
+
         # Store variant results in batch for later use
         batch["_variant_results"] = variant_results
-        
+
         return total_loss
 
     def training_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
@@ -346,38 +463,50 @@ class FusionSSMTrainer(LightningModule):
     def test_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
         """Run inference on all variants and collect outputs."""
         self._shared_step(batch, stage="test")
-        
+
         variant_results = batch.get("_variant_results", {})
-        
+
         pack: Dict[str, Any] = {
             "variant_results": {},
         }
-        
+
         for variant, results in variant_results.items():
-            pack["variant_results"][variant] = {
+            pack_entry: Dict[str, Any] = {
                 "p_hat": results["p_hat"].detach().cpu(),
-                "alpha": results["alpha"].detach().cpu(),
-                "p_left": results["p_left"].detach().cpu(),
-                "p_right": results["p_right"].detach().cpu(),
             }
+            if "alpha" in results:
+                pack_entry["alpha"] = results["alpha"].detach().cpu()
+            if "p_left" in results:
+                pack_entry["p_left"] = results["p_left"].detach().cpu()
+            if "p_right" in results:
+                pack_entry["p_right"] = results["p_right"].detach().cpu()
+            if "p_left_recon" in results:
+                pack_entry["p_left_recon"] = results["p_left_recon"].detach().cpu()
+            if "p_right_recon" in results:
+                pack_entry["p_right_recon"] = results["p_right_recon"].detach().cpu()
+            pack["variant_results"][variant] = pack_entry
             if results.get("logvar") is not None:
-                pack["variant_results"][variant]["logvar"] = results["logvar"].detach().cpu()
+                pack["variant_results"][variant]["logvar"] = (
+                    results["logvar"].detach().cpu()
+                )
             if "p_gt" in results:
-                pack["variant_results"][variant]["label"] = results["p_gt"].detach().cpu()
+                pack["variant_results"][variant]["label"] = (
+                    results["p_gt"].detach().cpu()
+                )
             if "frames_cam1" in results:
-                pack["variant_results"][variant]["frames_cam1"] = results["frames_cam1"].detach().cpu()
+                pack["variant_results"][variant]["frames_cam1"] = (
+                    results["frames_cam1"].detach().cpu()
+                )
             if "frames_cam2" in results:
-                pack["variant_results"][variant]["frames_cam2"] = results["frames_cam2"].detach().cpu()
-        
+                pack["variant_results"][variant]["frames_cam2"] = (
+                    results["frames_cam2"].detach().cpu()
+                )
+
         if "meta" in batch:
             pack["meta"] = batch["meta"]
-        
+
         self.test_outputs.append(pack)
-        
-        # Return first variant's loss for summary
-        if variant_results:
-            first_variant = list(variant_results.keys())[0]
-            return torch.tensor(0.0)
+
         return torch.tensor(0.0)
 
     def on_test_epoch_end(self) -> None:
@@ -396,36 +525,60 @@ class FusionSSMTrainer(LightningModule):
         all_variants = set()
         for output in self.test_outputs:
             all_variants.update(output.get("variant_results", {}).keys())
-        
-        payload: Dict[str, Any] = {
-            "variants": {}
-        }
-        
+
+        payload: Dict[str, Any] = {"variants": {}}
+
         for variant in sorted(all_variants):
             variant_outputs = []
             for output in self.test_outputs:
                 if variant in output.get("variant_results", {}):
                     variant_outputs.append(output["variant_results"][variant])
-            
+
             if variant_outputs:
                 variant_data = {
                     "p_hat": torch.cat([x["p_hat"] for x in variant_outputs], dim=0),
-                    "alpha": torch.cat([x["alpha"] for x in variant_outputs], dim=0),
-                    "p_left": torch.cat([x["p_left"] for x in variant_outputs], dim=0),
-                    "p_right": torch.cat([x["p_right"] for x in variant_outputs], dim=0),
                 }
-                
+
+                if all("alpha" in x for x in variant_outputs):
+                    variant_data["alpha"] = torch.cat(
+                        [x["alpha"] for x in variant_outputs], dim=0
+                    )
+                if all("p_left" in x for x in variant_outputs):
+                    variant_data["p_left"] = torch.cat(
+                        [x["p_left"] for x in variant_outputs], dim=0
+                    )
+                if all("p_right" in x for x in variant_outputs):
+                    variant_data["p_right"] = torch.cat(
+                        [x["p_right"] for x in variant_outputs], dim=0
+                    )
+                if all("p_left_recon" in x for x in variant_outputs):
+                    variant_data["p_left_recon"] = torch.cat(
+                        [x["p_left_recon"] for x in variant_outputs], dim=0
+                    )
+                if all("p_right_recon" in x for x in variant_outputs):
+                    variant_data["p_right_recon"] = torch.cat(
+                        [x["p_right_recon"] for x in variant_outputs], dim=0
+                    )
+
                 if all("label" in x for x in variant_outputs):
-                    variant_data["label"] = torch.cat([x["label"] for x in variant_outputs], dim=0)
+                    variant_data["label"] = torch.cat(
+                        [x["label"] for x in variant_outputs], dim=0
+                    )
                 if all("logvar" in x for x in variant_outputs):
-                    variant_data["logvar"] = torch.cat([x["logvar"] for x in variant_outputs], dim=0)
+                    variant_data["logvar"] = torch.cat(
+                        [x["logvar"] for x in variant_outputs], dim=0
+                    )
                 if all("frames_cam1" in x for x in variant_outputs):
-                    variant_data["frames_cam1"] = torch.cat([x["frames_cam1"] for x in variant_outputs], dim=0)
+                    variant_data["frames_cam1"] = torch.cat(
+                        [x["frames_cam1"] for x in variant_outputs], dim=0
+                    )
                 if all("frames_cam2" in x for x in variant_outputs):
-                    variant_data["frames_cam2"] = torch.cat([x["frames_cam2"] for x in variant_outputs], dim=0)
-                
+                    variant_data["frames_cam2"] = torch.cat(
+                        [x["frames_cam2"] for x in variant_outputs], dim=0
+                    )
+
                 payload["variants"][variant] = variant_data
-        
+
         # Add metadata if available
         if any("meta" in x for x in self.test_outputs):
             payload["meta"] = [x.get("meta", None) for x in self.test_outputs]
@@ -442,7 +595,7 @@ class FusionSSMTrainer(LightningModule):
         all_params.extend(self.models["character"].parameters())
         all_params.extend(self.models["pole"].parameters())
         all_params.extend(self.models["ski"].parameters())
-        
+
         optimizer = torch.optim.AdamW(
             all_params,
             lr=self.lr,

@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
 from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS, TARGET_IDS, UNITY_MHR70_MAPPING
-from project.trainer.train_fusion_SSM import FusionSSMTrainer
+from project.trainer.train_dual2pose import Dual2PoseTrainer
 
 
 def _extract_float_token(token: str) -> Optional[float]:
@@ -290,7 +290,7 @@ def _draw_3d(
     _set_equal_3d_axes(ax, fused)
 
 
-def _build_model_from_ckpt(ckpt_path: Path, device: torch.device) -> FusionSSMTrainer:
+def _build_model_from_ckpt(ckpt_path: Path, device: torch.device) -> Dual2PoseTrainer:
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     state_dict = ckpt.get("state_dict", ckpt)
 
@@ -334,7 +334,7 @@ def _build_model_from_ckpt(ckpt_path: Path, device: torch.device) -> FusionSSMTr
         }
     )
 
-    module = FusionSSMTrainer(hparams=hparams)
+    module = Dual2PoseTrainer(hparams=hparams)
     if num_joints != len(ID_TO_INDEX):
         raise ValueError(
             f"Checkpoint joint count mismatch: ckpt has {num_joints}, current target has {len(ID_TO_INDEX)}"
@@ -347,7 +347,7 @@ def _build_model_from_ckpt(ckpt_path: Path, device: torch.device) -> FusionSSMTr
 
 
 def _run_infer_one_frame(
-    module: FusionSSMTrainer,
+    module: Dual2PoseTrainer,
     left_3d: np.ndarray,
     right_3d: np.ndarray,
     device: torch.device,

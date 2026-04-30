@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SimpleVideo2Pose(nn.Module):
+class Dual2PoseNet(nn.Module):
     """Simple CNN to estimate 3D keypoints from video frames.
     
     Input: Video frames (B, T, H, W, 3) or (B, C, T, H, W)

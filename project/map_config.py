@@ -21,7 +21,7 @@ Date      	By	Comments
 """
 
 from typing import Dict, Optional
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 
 # --- 設定 ---
 # * 这个文件定义了与 Unity MHR70 骨骼结构相关的映射和配置，供整个项目使用。
@@ -94,29 +94,41 @@ class UnityDataConfig:
     action_id: str
     cam1_id: str
     cam2_id: str
-    cam1_path: str
-    cam2_path: str
+
     label_path: str
+
     cam1_frames_dir: str
     cam2_frames_dir: str
+
+    sequence_meta_path: str
+    joint_names_path: str
+
+    # root dir, maybe use?
     cam1_kpt2d_dir: str
     cam2_kpt2d_dir: str
     kpt3d_dir: str
+    # ground true from unity
+    cam1_kpt2d_dirs: Optional[Dict[str, str]]
+    cam2_kpt2d_dirs: Optional[Dict[str, str]]
+    kpt3d_dirs: Optional[Dict[str, str]]
 
+    # sam3d body results
     sam3d_cam1_kpt2d_dir: str
     sam3d_cam2_kpt2d_dir: str
     sam3d_cam1_kpt3d_dir: str
     sam3d_cam2_kpt3d_dir: str
 
+    # sam3 mask
     sam3_cam1_mask_ski_dir: str
     sam3_cam2_mask_ski_pole_dir: str
 
-    sequence_meta_path: str
-    joint_names_path: str
+    def to_dict(self) -> Dict:
+        return asdict(self)
 
-    cam1_kpt2d_dirs: Optional[Dict[str, str]] = None
-    cam2_kpt2d_dirs: Optional[Dict[str, str]] = None
-    kpt3d_dirs: Optional[Dict[str, str]] = None
+    @classmethod
+    def from_dict(cls, d: Dict) -> "UnityDataConfig":
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 @dataclass
