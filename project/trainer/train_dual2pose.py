@@ -4,29 +4,19 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
 from pytorch_lightning import LightningModule
 
-from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS
-from project.models import FusionSSM, PoseLossWeights, PoseRefineLoss
-from project.models.dual2pose_net import Dual2PoseNet
+from project.map_config import ID_TO_INDEX, TARGET_SKELETON_CONNECTIONS_INDEX
+from project.models import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
 
 logger = logging.getLogger(__name__)
 
 
-def _build_target_bone_edges() -> List[Tuple[int, int]]:
-    """Convert global skeleton ids to contiguous target-joint indices."""
-    edges: List[Tuple[int, int]] = []
-    for src_id, dst_id in SKELETON_CONNECTIONS:
-        if src_id in ID_TO_INDEX and dst_id in ID_TO_INDEX:
-            edges.append((ID_TO_INDEX[src_id], ID_TO_INDEX[dst_id]))
-    return edges
-
-
 class Dual2PoseTrainer(LightningModule):
-    """Pose fusion trainer with separate models for character, pole, and ski variants."""
+    """Pose fusion trainer for character variant using Dual2PoseNet."""
 
     def __init__(self, hparams) -> None:
         super().__init__()
@@ -43,41 +33,19 @@ class Dual2PoseTrainer(LightningModule):
         use_conf = bool(getattr(model_cfg, "use_conf", False))
         predict_logvar = bool(getattr(model_cfg, "predict_logvar", False))
 
-        # Number of joints for each variant (from data)
-        # character: 14 filtered joints, pole: 4 joints, ski: 6 joints
-        num_joints_by_variant = {
-            "character": len(ID_TO_INDEX),  # 14
-            "pole": 4,
-            "ski": 6,
-        }
+        num_joints_character = len(ID_TO_INDEX)  # 15
 
-        # Create separate models ONLY for character
-        # (pole and ski have no SAM predictions, so no fusion model needed)
         self.models = torch.nn.ModuleDict()
-        self.models["character"] = FusionSSM(
-            num_joints=num_joints_by_variant["character"],
+        self.models["character"] = Dual2PoseNet(
+            num_joints=num_joints_character,
             d_model=d_model,
             n_layers=n_layers,
             use_conf=use_conf,
             predict_logvar=predict_logvar,
+            bone_edges=TARGET_SKELETON_CONNECTIONS_INDEX,
         )
 
-        # Create Video2Pose models for pole and ski
-        self.models["pole"] = Dual2PoseNet(
-            num_joints=num_joints_by_variant["pole"],
-            hidden_dim=max(64, d_model // 4),
-        )
-        self.models["ski"] = Dual2PoseNet(
-            num_joints=num_joints_by_variant["ski"],
-            hidden_dim=max(64, d_model // 4),
-        )
-
-        logger.info(
-            f"Created models: "
-            f"character=FusionSSM({num_joints_by_variant['character']}), "
-            f"pole=Video2Pose({num_joints_by_variant['pole']}), "
-            f"ski=Video2Pose({num_joints_by_variant['ski']})"
-        )
+        logger.info(f"Created model: character=Dual2PoseNet({num_joints_character})")
 
         weights = PoseLossWeights(
             mpjpe=float(getattr(hparams.loss, "lambda_mpjpe", 1.0)),
@@ -91,10 +59,9 @@ class Dual2PoseTrainer(LightningModule):
         # Create loss function only for character (has skeleton)
         self.loss_fns = torch.nn.ModuleDict()
         self.loss_fns["character"] = PoseRefineLoss(
-            bone_edges=_build_target_bone_edges(),
+            bone_edges=TARGET_SKELETON_CONNECTIONS_INDEX,
             weights=weights,
         )
-        # pole and ski GT data is stored but not used for model training
 
         self.save_root = str(getattr(hparams, "log_path", "./logs"))
         self.test_outputs: List[Dict[str, Any]] = []
@@ -123,30 +90,14 @@ class Dual2PoseTrainer(LightningModule):
         return torch.norm(acc, dim=-1).mean()
 
     @staticmethod
-    def _require_pose(batch: Dict[str, Any], path: Sequence[str]) -> torch.Tensor:
-        cur: Any = batch
-        for key in path:
-            if not isinstance(cur, dict) or key not in cur:
-                raise KeyError(f"Missing batch key path: {'/'.join(path)}")
-            cur = cur[key]
-
-        if not isinstance(cur, torch.Tensor):
-            raise TypeError(f"Expected tensor at {'/'.join(path)}, got {type(cur)}")
-        if cur.ndim != 4 or cur.shape[-1] != 3:
-            raise ValueError(
-                f"Expected pose tensor shape (B,T,J,3) at {'/'.join(path)}, got {tuple(cur.shape)}"
-            )
-        return cur.float()
-
-    @staticmethod
-    def _get_variant_data(batch: Dict[str, Any], variant: str) -> Tuple[
+    def _get_character_data(batch: Dict[str, Any]) -> Tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
     ]:
-        """Extract SAM, GT data, and frames for a specific variant.
+        """Extract character SAM, GT data, and frames.
 
         Returns:
             Tuple of (p_left, p_right, p_gt, frames_left, frames_right) where:
@@ -154,42 +105,32 @@ class Dual2PoseTrainer(LightningModule):
                 - p_gt: ground truth (or None if not available)
                 - frames_left, frames_right: video frames (or None if not available)
         """
-        # SAM data is only available for character variant
-        if variant == "character":
-            if (
-                "character_cam1" not in batch["kpt3d_sam"]
-                or "character_cam2" not in batch["kpt3d_sam"]
-            ):
-                raise KeyError(
-                    f"SAM data missing for character: {list(batch['kpt3d_sam'].keys())}"
-                )
-            p_left = batch["kpt3d_sam"]["character_cam1"].float()
-            p_right = batch["kpt3d_sam"]["character_cam2"].float()
-        else:
-            # For pole and ski, no SAM data, use character SAM as fallback
-            if (
-                "character_cam1" not in batch["kpt3d_sam"]
-                or "character_cam2" not in batch["kpt3d_sam"]
-            ):
-                raise KeyError(f"Character SAM data missing as fallback for {variant}")
-            p_left = batch["kpt3d_sam"]["character_cam1"].float()
-            p_right = batch["kpt3d_sam"]["character_cam2"].float()
+        if (
+            "kpt3d_sam" not in batch
+            or "character_cam1" not in batch["kpt3d_sam"]
+            or "character_cam2" not in batch["kpt3d_sam"]
+        ):
+            kpt3d_sam = batch.get("kpt3d_sam", {})
+            available = list(kpt3d_sam.keys()) if isinstance(kpt3d_sam, dict) else []
+            raise KeyError(f"SAM data missing for character: {available}")
+        p_left = batch["kpt3d_sam"]["character_cam1"].float()
+        p_right = batch["kpt3d_sam"]["character_cam2"].float()
 
         # Validate shape
         for p in [p_left, p_right]:
             if p.ndim != 4 or p.shape[-1] != 3:
                 raise ValueError(
-                    f"Expected pose tensor shape (B,T,J,3) for {variant}, got {tuple(p.shape)}"
+                    f"Expected pose tensor shape (B,T,J,3) for character, got {tuple(p.shape)}"
                 )
 
         # GT data
         p_gt = None
         if "kpt3d_gt" in batch and isinstance(batch["kpt3d_gt"], dict):
-            if variant in batch["kpt3d_gt"]:
-                p_gt = batch["kpt3d_gt"][variant].float()
+            if "character" in batch["kpt3d_gt"]:
+                p_gt = batch["kpt3d_gt"]["character"].float()
                 if p_gt.ndim != 4 or p_gt.shape[-1] != 3:
                     raise ValueError(
-                        f"Expected GT shape (B,T,J,3) for {variant}, got {tuple(p_gt.shape)}"
+                        f"Expected GT shape (B,T,J,3) for character, got {tuple(p_gt.shape)}"
                     )
 
         # Frame data (video frames)
@@ -204,21 +145,17 @@ class Dual2PoseTrainer(LightningModule):
         return p_left, p_right, p_gt, frames_left, frames_right
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
-        """Process all variants:
-        - character: FusionSSM with SAM predictions (2 views of 3D poses)
-        - pole, ski: Video2Pose with frame inputs
+        """Process character variant with dual-view SAM 3D poses.
 
         Returns:
             Total loss.
         """
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
         variant_results: Dict[str, Any] = {}
 
-        # ===== CHARACTER: FusionSSM with SAM =====
+        # ===== CHARACTER: Dual2PoseNet with SAM =====
         try:
-            p_left, p_right, p_gt, frames_left, frames_right = self._get_variant_data(
-                batch, "character"
-            )
+            p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(batch)
 
             model = self.models["character"]
             loss_fn = self.loss_fns["character"]
@@ -374,74 +311,6 @@ class Dual2PoseTrainer(LightningModule):
         except KeyError as e:
             logger.warning(f"Skipping character: {e}")
 
-        # ===== POLE & SKI: Video2Pose with frames =====
-        for variant in ["pole", "ski"]:
-            try:
-                _, _, p_gt, frames_left, frames_right = self._get_variant_data(
-                    batch, variant
-                )
-
-                if frames_left is None or frames_right is None:
-                    logger.warning(f"Skipping {variant}: no frame data")
-                    continue
-
-                model = self.models[variant]
-
-                # Standard video layout after collate: (B,C,T,H,W)
-                if frames_left.ndim != 5:
-                    raise ValueError(
-                        f"Expected frames shape (B,C,T,H,W), got {tuple(frames_left.shape)}"
-                    )
-                frames_input = frames_left.permute(0, 2, 1, 3, 4)  # (B,T,C,H,W)
-                p_hat = model(frames_input)
-                if p_hat.ndim != 4 or p_hat.shape[1] != 1:
-                    raise ValueError(
-                        f"Expected model output shape (B*T,1,J,3), got {tuple(p_hat.shape)}"
-                    )
-                bsz, t_steps = frames_left.shape[0], frames_left.shape[2]
-                p_hat = p_hat.squeeze(1).reshape(
-                    bsz, t_steps, p_hat.shape[-2], p_hat.shape[-1]
-                )
-
-                # Compute loss if GT available
-                if p_gt is not None:
-                    # Simple L1 loss for now (no bone/temporal losses for pole/ski)
-                    loss = torch.nn.functional.l1_loss(p_hat, p_gt)
-                    total_loss = total_loss + loss
-
-                    self.log(
-                        f"{stage}/{variant}/loss",
-                        loss,
-                        on_step=True,
-                        on_epoch=True,
-                        prog_bar=True,
-                        batch_size=p_hat.shape[0],
-                    )
-
-                    mpjpe = torch.norm(p_hat - p_gt, dim=-1).mean()
-                    self.log(
-                        f"{stage}/{variant}/mpjpe",
-                        mpjpe,
-                        on_step=True,
-                        on_epoch=True,
-                        prog_bar=False,
-                        batch_size=p_hat.shape[0],
-                    )
-
-                # Store results
-                variant_results[variant] = {
-                    "p_hat": p_hat,
-                }
-                if p_gt is not None:
-                    variant_results[variant]["p_gt"] = p_gt
-                if frames_left is not None:
-                    variant_results[variant]["frames_cam1"] = frames_left
-                if frames_right is not None:
-                    variant_results[variant]["frames_cam2"] = frames_right
-
-            except KeyError as e:
-                logger.warning(f"Skipping {variant}: {e}")
-
         # Store variant results in batch for later use
         batch["_variant_results"] = variant_results
 
@@ -457,7 +326,7 @@ class Dual2PoseTrainer(LightningModule):
     def on_test_start(self) -> None:
         self.test_outputs: List[Dict[str, Any]] = []
         self.test_save_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("FusionSSM test start")
+        logger.info("Dual2PoseNet test start")
 
     @torch.no_grad()
     def test_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
@@ -589,15 +458,9 @@ class Dual2PoseTrainer(LightningModule):
         logger.info("Variants saved: %s", list(payload["variants"].keys()))
 
     def configure_optimizers(self):
-        """Configure optimizer for all models (character, pole, ski)."""
-        # Collect parameters from all models
-        all_params = []
-        all_params.extend(self.models["character"].parameters())
-        all_params.extend(self.models["pole"].parameters())
-        all_params.extend(self.models["ski"].parameters())
-
+        """Configure optimizer for the character model."""
         optimizer = torch.optim.AdamW(
-            all_params,
+            self.models["character"].parameters(),
             lr=self.lr,
             weight_decay=self.weight_decay,
         )

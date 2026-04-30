@@ -1,5 +1,5 @@
-from project.models.fusion_ssm_pose_refiner import (
-	FusionSSM,
+from project.models.dual2pose_net import (
+	Dual2PoseNet,
 	PoseLossWeights,
 	PoseRefineLoss,
 	SSMRefiner,
@@ -10,7 +10,7 @@ from project.models.fusion_ssm_pose_refiner import (
 __all__ = [
 	"ViewGating",
 	"SSMRefiner",
-	"FusionSSM",
+	"Dual2PoseNet",
 	"PoseLossWeights",
 	"PoseRefineLoss",
 	"build_velocity_confidence_proxy",

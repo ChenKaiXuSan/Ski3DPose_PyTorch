@@ -85,6 +85,14 @@ SKELETON_CONNECTIONS = [
     (12, 14),  # knee_r -> foot_r
 ]
 
+# Skeleton connections after filtering, represented by contiguous joint indices.
+# Edge format is (parent_joint_index, child_joint_index), where index is from ID_TO_INDEX.
+TARGET_SKELETON_CONNECTIONS_INDEX = [
+    (ID_TO_INDEX[parent_id], ID_TO_INDEX[child_id])
+    for parent_id, child_id in SKELETON_CONNECTIONS
+    if parent_id in ID_TO_INDEX and child_id in ID_TO_INDEX
+]
+
 
 @dataclass
 class UnityDataConfig:
