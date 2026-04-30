@@ -106,12 +106,12 @@ def generate_index_files(
         use_layer_camera_filter: 是否启用按层/层内相机筛选
         selected_layers: 选中的层列表
         selected_cameras_per_layer: 每层选中的相机编号
-        strategies: 要生成的策略列表，默认生成所有策略
+        strategies: 要生成的策略列表，默认生成 by_action 和 by_camera_pair
         n_splits: K折数量
         force_recreate: 是否强制重新生成
     """
     if strategies is None:
-        strategies = ["by_person", "by_action", "by_camera_pair"]
+        strategies = ["by_action", "by_camera_pair"]
 
     index_mapping_dir = (
         Path(data_root)

@@ -9,10 +9,9 @@ Author: Kaixu Chen
 Comment:
 交叉验证脚本 - 用于摄像头两两组合的场景
 针对2个人物、12个动作、每个动作108个摄像头的数据集。
-支持三种划分策略：
-1. by_person: 按人物划分（Leave-One-Person-Out）
-2. by_action: 按动作划分（K-Fold on actions）
-3. by_camera_pair: 按摄像头对划分（K-Fold on camera pairs）
+支持两种划分策略：
+1. by_action: 按动作划分（K-Fold on actions）
+2. by_camera_pair: 按摄像头对划分（K-Fold on camera pairs）
 
 Have a good code time :)
 -----
@@ -48,7 +47,7 @@ class CameraPairCrossValidation:
         selected_layers: 需要保留的层编号列表（如 [1, 2, 5]）
         selected_cameras_per_layer: 每层保留的相机编号（层内A编号）
             示例: {"1": [1, 2, 3], "2": [5, 10]}
-        split_strategy: 划分策略，可选 'by_person', 'by_action', 'by_camera_pair'
+        split_strategy: 划分策略，可选 'by_action', 'by_camera_pair'
         n_splits: K折交叉验证的折数（仅用于 by_action 和 by_camera_pair 策略）
         index_save_path: 索引文件保存路径
     """
@@ -62,7 +61,7 @@ class CameraPairCrossValidation:
         use_layer_camera_filter: bool = False,
         selected_layers: Optional[List[int]] = None,
         selected_cameras_per_layer: Optional[Dict[str, List[int]]] = None,
-        split_strategy: str = "by_person",  # by_person, by_action, by_camera_pair
+        split_strategy: str = "by_action",  # by_action, by_camera_pair
         n_splits: int = 5,
         sam3d_export_root: Optional[str] = None,
         index_save_path: Optional[str] = None,
@@ -317,94 +316,11 @@ class CameraPairCrossValidation:
 
         return samples
 
-    def split_by_person(
-        self, samples: List[UnityDataConfig]
-    ) -> Dict[int, Dict[str, Any]]:
-        """
-        策略1: 按人物划分 (Leave-One-Person-Out with train/val/test split)
-        每一折使用一个人的数据进行 7/2/1 train/val/test 划分
-        其他人的数据全部作为额外的训练数据
-        """
-        fold_dict: Dict[int, Dict[str, Any]] = {}
-
-        person_ids = sorted(set(s.person_id for s in samples))
-
-        if len(person_ids) <= 1:
-            return {
-                0: {
-                    "train": samples,
-                    "val": [],
-                    "test": [],
-                    "val_person": person_ids[0] if person_ids else "unknown",
-                }
-            }
-
-        rng = np.random.default_rng(42)
-
-        for fold_idx, test_person in enumerate(person_ids):
-            # 将测试人物的数据分成 train:val:test = 7:2:1
-            test_person_samples = [s for s in samples if s.person_id == test_person]
-
-            # 随机打乱测试人物的样本
-            shuffled_test_samples = test_person_samples.copy()
-            rng_fold = np.random.default_rng(
-                int(rng.integers(0, 10_000_000)) + fold_idx
-            )
-            rng_fold.shuffle(shuffled_test_samples)
-
-            n_total = len(shuffled_test_samples)
-            n_train_person = int(round(n_total * 0.7))
-            n_val_person = int(round(n_total * 0.2))
-            n_test_person = n_total - n_train_person - n_val_person
-
-            # 保证非空
-            if n_total >= 3:
-                if n_train_person <= 0:
-                    n_train_person = 1
-                if n_val_person <= 0:
-                    n_val_person = 1
-                n_test_person = n_total - n_train_person - n_val_person
-                if n_test_person <= 0:
-                    n_test_person = 1
-                    if n_train_person > n_val_person:
-                        n_train_person -= 1
-                    else:
-                        n_val_person -= 1
-
-            train_person_samples = shuffled_test_samples[:n_train_person]
-            val_person_samples = shuffled_test_samples[
-                n_train_person : n_train_person + n_val_person
-            ]
-            test_person_samples_split = shuffled_test_samples[
-                n_train_person + n_val_person :
-            ]
-
-            # 其他人的数据全部作为训练数据
-            other_samples = [s for s in samples if s.person_id != test_person]
-
-            final_train = train_person_samples + other_samples
-            final_val = val_person_samples
-            final_test = test_person_samples_split
-
-            fold_dict[fold_idx] = {
-                "train": final_train,
-                "val": final_val,
-                "test": final_test,
-                "val_person": test_person,
-                "ratio": "7/2/1",
-            }
-
-            print(
-                f"Fold {fold_idx}: train={len(final_train)}, val={len(final_val)}, test={len(final_test)} (person={test_person})"
-            )
-
-        return fold_dict
-
     def split_by_action(
         self, samples: List[UnityDataConfig]
     ) -> Dict[int, Dict[str, Any]]:
         """
-        策略2: 按动作划分 (K-Fold on actions with train/val/test split)
+        策略1: 按动作划分 (K-Fold on actions with train/val/test split)
         将动作分成K折，每折某些动作用于训练、验证和测试
         """
         fold_dict: Dict[int, Dict[str, Any]] = {}
@@ -474,7 +390,7 @@ class CameraPairCrossValidation:
         self, samples: List[UnityDataConfig]
     ) -> Dict[int, Dict[str, Any]]:
         """
-        策略3: 按摄像头对划分（每个fold内按7/2/1切分train/val/test）
+        策略2: 按摄像头对划分（每个fold内按7/2/1切分train/val/test）
         每个fold都会基于相机对产生独立的 train/val/test。
 
         注意：这种方式会产生大量的样本，可能需要采样或分层
@@ -568,14 +484,14 @@ class CameraPairCrossValidation:
 
         samples = self.build_all_samples()
 
-        if self.split_strategy == "by_person":
-            fold_dict = self.split_by_person(samples)
-        elif self.split_strategy == "by_action":
+        if self.split_strategy == "by_action":
             fold_dict = self.split_by_action(samples)
         elif self.split_strategy == "by_camera_pair":
             fold_dict = self.split_by_camera_pair(samples)
         else:
-            raise ValueError(f"未知的划分策略: {self.split_strategy}")
+            raise ValueError(
+                f"未知的划分策略: {self.split_strategy}，仅支持 by_action / by_camera_pair"
+            )
 
         return fold_dict
 
