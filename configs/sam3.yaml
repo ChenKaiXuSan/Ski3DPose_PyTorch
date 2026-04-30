@@ -1,0 +1,38 @@
+# hydra config
+hydra:
+  run:
+    dir: ${paths.log_path}
+  job:
+    chdir: false
+
+# Path
+paths:
+  log_path: logs/unity_sam3d-body/${infer.type}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  unity:
+    unity_dataset_data_path: /workspace/data/skiing_unity_dataset/data_pole_ski
+    unity_sam3d_result_path: /workspace/data/skiing_unity_dataset/sam3d_body_results/inference
+    unity_sam3_result_path: /workspace/data/skiing_unity_dataset/sam3_results/inference
+  person:
+    person_video_path: /workspace/data/side_raw
+    person_sam3d_result_root: /workspace/data/sam3d_body_results/person
+    person_sam3_result_root: /workspace/data/sam3_results/person
+
+# Model
+model:
+  # HF Sam3 image backend options
+  hf_model_id: facebook/sam3
+  text_prompt: ["ski", "ski pole"]
+  batch_size: 4
+  threshold: 0.5
+  mask_threshold: 0.5
+
+visualize:
+  overlay_masks: true
+
+infer:
+  type: unity # unity or person
+
+  # Device can be an int/list (e.g. 0 or [0,1]) or "cpu"
+  gpu: [0, 1]
+
+  workers_per_gpu: 6 # Number of worker processes per GPU for data loading

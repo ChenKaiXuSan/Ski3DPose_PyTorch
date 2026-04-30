@@ -9,8 +9,8 @@
 			"path": "/workspace/data"
 		},
 		{
-			"name": "reference",
-			"path": "/workspace/code"
+			"name": "sam3_reference",
+			"path": "/workspace/sam3"
 		},
 	],
 	"settings": {

@@ -1,17 +1,21 @@
 {
   "configurations": [
     {
-      "name": "Python 调试程序: 模块",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "enter-your-module-name"
-    },
-    {
       "name": "unity_sam3d_body",
       "type": "debugpy",
       "request": "launch",
       "module": "SAM3Dbody.main",
       // "args": ["--config", "configs/sam3d_body.yaml"]
+    },
+    {
+      "name": "sam3_infer",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "SAM3.main",
+      "python": "/opt/conda/envs/sam3/bin/python",
+      "args": [
+        "infer.type=person",
+      ]
     },
     {
       "name": "index_mapping",
