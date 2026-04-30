@@ -113,7 +113,11 @@ def generate_index_files(
     if strategies is None:
         strategies = ["by_person", "by_action", "by_camera_pair"]
 
-    index_mapping_dir = Path(data_root) / "index_mapping" / f"use_layer_camera_filter_{'enabled' if use_layer_camera_filter else 'disabled'}"
+    index_mapping_dir = (
+        Path(data_root)
+        / "index_mapping"
+        / f"use_layer_camera_filter_{'enabled' if use_layer_camera_filter else 'disabled'}"
+    )
     index_mapping_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 80)
@@ -237,14 +241,14 @@ def hydra_main(cfg: Optional[DictConfig] = None) -> None:
     if cfg is None:
         raise ValueError("Hydra cfg is required")
 
-    cv_cfg = cfg.data.cross_validation
+    cv_cfg = cfg.cross_validation
 
     # 打印当前配置，便于排查。
     print("\nHydra cross validation config:")
     print(OmegaConf.to_yaml(cv_cfg))
 
     generate_index_files(
-        data_root=str(cfg.data.root_path),
+        data_root=str(cfg.data.unity.root_path),
         num_persons=int(cv_cfg.num_persons),
         num_actions=int(cv_cfg.num_actions),
         num_cameras=int(cv_cfg.num_cameras),
@@ -265,7 +269,7 @@ def hydra_main(cfg: Optional[DictConfig] = None) -> None:
         strategies=list(cv_cfg.strategies),
         n_splits=int(cv_cfg.n_splits),
         force_recreate=bool(cv_cfg.force_recreate),
-        sam3d_export_root=str(cfg.data.get("sam3d_export_path", "")),
+        sam3d_export_root=str(cfg.data.unity.get("sam3d_export_path", "")),
     )
 
 

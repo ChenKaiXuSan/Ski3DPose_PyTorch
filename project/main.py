@@ -74,26 +74,6 @@ def _select_variant_dir_from_item(
     )
 
 
-def _resolve_trainer_requirements(hparams: DictConfig) -> Dict[str, object]:
-    """Infer required input modalities from current trainer selection."""
-    backbone = str(hparams.model.backbone)
-    fuse_method = str(hparams.model.fuse_method)
-
-    if backbone == "3dcnn":
-        if fuse_method in ["ssm", "mamba", "mamba_ssm"]:
-            return {
-                "trainer_name": "FusionSSMTrainer",
-                "requires_frames": False,
-                "requires_2d_kpt": False,
-                "requires_3d_kpt": True,
-            }
-
-    raise ValueError(
-        "Cannot infer trainer input requirements for "
-        f"backbone={backbone}, fuse_method={fuse_method}"
-    )
-
-
 def load_fold_dataset_idx_from_fold_json(
     config: DictConfig, fold: int
 ) -> Dict[str, List[UnityDataConfig]]:
@@ -151,6 +131,12 @@ def load_fold_dataset_idx_from_fold_json(
                     sam3d_cam2_kpt2d_dir=str(item["sam3d_cam2_kpt2d_dir"]),
                     sam3d_cam1_kpt3d_dir=str(item["sam3d_cam1_kpt3d_dir"]),
                     sam3d_cam2_kpt3d_dir=str(item["sam3d_cam2_kpt3d_dir"]),
+                    sam3_cam1_mask_ski_dir=str(
+                        item.get("sam3_cam1_mask_ski_dir") or ""
+                    ),
+                    sam3_cam2_mask_ski_pole_dir=str(
+                        item.get("sam3_cam2_mask_ski_pole_dir") or ""
+                    ),
                     sequence_meta_path=str(item["sequence_meta_path"]),
                     joint_names_path=str(item["joint_names_path"]),
                 )
@@ -160,144 +146,6 @@ def load_fold_dataset_idx_from_fold_json(
         f"✓ Loaded fold {fold}: train={len(dataset_idx['train'])}, val={len(dataset_idx['val'])}, test={len(dataset_idx['test'])}"
     )
     return dataset_idx
-
-
-def load_fold_dataset_idx_from_index_mapping(config: DictConfig):
-    """Load precomputed fold mapping from index json file.
-
-    This removes CV split preparation from training entry.
-    """
-    index_mapping_cfg = Path(str(config.data.index_mapping))
-    index_file_name = str(config.data.index_mapping_file)
-
-    # Backward/forward compatible:
-    # 1) data.index_mapping points to directory + data.index_mapping_file
-    # 2) data.index_mapping points directly to a json file
-    if index_mapping_cfg.suffix == ".json":
-        index_file = index_mapping_cfg
-    else:
-        index_file = index_mapping_cfg / index_file_name
-
-    if not index_file.exists():
-        raise FileNotFoundError(
-            f"Index mapping file not found: {index_file}. "
-            f"Please generate it first (e.g. cross_validation/generate_cv_index.py)."
-        )
-
-    with open(index_file, "r", encoding="utf-8") as f:
-        serial = json.load(f)
-
-    # Skip metadata entry if exists.
-    serial.pop("_metadata", None)
-
-    fold_dataset_idx: Dict[int, Dict[str, List[UnityDataConfig]]] = {}
-    for kfold, d in serial.items():
-        if not isinstance(d, dict):
-            raise ValueError(f"Fold {kfold} must be a dict, got {type(d)}")
-
-        fold = int(kfold)
-        fold_dataset_idx[fold] = {"train": [], "val": [], "test": []}
-
-        # Accept both val/valid and test aliases from different generators.
-        split_aliases = {
-            "train": ["train"],
-            "val": ["val", "valid"],
-            "test": ["test", "eval", "holdout"],
-        }
-
-        for split, aliases in split_aliases.items():
-            src_list = None
-            for alias in aliases:
-                if alias in d:
-                    src_list = d[alias]
-                    break
-            if src_list is None:
-                # Backward compatibility: old index files may not have test split.
-                if split == "test" and "val" in d:
-                    src_list = d["val"]
-                else:
-                    raise KeyError(
-                        f"Fold {kfold} missing split '{split}' (aliases: {aliases})"
-                    )
-            if not isinstance(src_list, list):
-                raise TypeError(
-                    f"Fold {kfold} split '{split}' must be a list, got {type(src_list)}"
-                )
-
-            for item in src_list:
-                if not isinstance(item, dict):
-                    raise TypeError(
-                        f"Index item in fold {kfold}/{split} must be dict, got {type(item)}"
-                    )
-
-                cam1_kpt2d_dir = _select_variant_dir_from_item(
-                    item, "cam1_kpt2d_dir", "cam1_kpt2d_dirs"
-                )
-                cam2_kpt2d_dir = _select_variant_dir_from_item(
-                    item, "cam2_kpt2d_dir", "cam2_kpt2d_dirs"
-                )
-                kpt3d_dir = _select_variant_dir_from_item(
-                    item, "kpt3d_dir", "kpt3d_dirs"
-                )
-
-                # camera-pair index format: build UnityDataConfig directly.
-                if "cam1_frames_dir" in item and "cam2_frames_dir" in item:
-                    required_fields = [
-                        "person_id",
-                        "action_id",
-                        "cam1_id",
-                        "cam2_id",
-                        "cam1_path",
-                        "cam2_path",
-                        "label_path",
-                        "cam1_frames_dir",
-                        "cam2_frames_dir",
-                        "sam3d_cam1_kpt2d_dir",
-                        "sam3d_cam2_kpt2d_dir",
-                        "sam3d_cam1_kpt3d_dir",
-                        "sam3d_cam2_kpt3d_dir",
-                        "sequence_meta_path",
-                        "joint_names_path",
-                    ]
-                    missing = [k for k in required_fields if k not in item]
-                    if missing:
-                        raise KeyError(
-                            f"Fold {kfold}/{split} missing required UnityDataConfig keys: {missing}"
-                        )
-
-                    fold_dataset_idx[fold][split].append(
-                        UnityDataConfig(
-                            person_id=str(item["person_id"]),
-                            action_id=str(item["action_id"]),
-                            cam1_id=str(item["cam1_id"]),
-                            cam2_id=str(item["cam2_id"]),
-                            cam1_path=str(item["cam1_path"]),
-                            cam2_path=str(item["cam2_path"]),
-                            label_path=str(item["label_path"]),
-                            cam1_frames_dir=str(item["cam1_frames_dir"]),
-                            cam2_frames_dir=str(item["cam2_frames_dir"]),
-                            cam1_kpt2d_dirs=item.get("cam1_kpt2d_dirs"),
-                            cam2_kpt2d_dirs=item.get("cam2_kpt2d_dirs"),
-                            cam1_kpt2d_dir=cam1_kpt2d_dir,
-                            cam2_kpt2d_dir=cam2_kpt2d_dir,
-                            kpt3d_dirs=item.get("kpt3d_dirs"),
-                            kpt3d_dir=kpt3d_dir,
-                            sam3d_cam1_kpt2d_dir=str(item["sam3d_cam1_kpt2d_dir"]),
-                            sam3d_cam2_kpt2d_dir=str(item["sam3d_cam2_kpt2d_dir"]),
-                            sam3d_cam1_kpt3d_dir=str(item["sam3d_cam1_kpt3d_dir"]),
-                            sam3d_cam2_kpt3d_dir=str(item["sam3d_cam2_kpt3d_dir"]),
-                            sequence_meta_path=str(item["sequence_meta_path"]),
-                            joint_names_path=str(item["joint_names_path"]),
-                        )
-                    )
-                    continue
-
-                raise ValueError(
-                    "Unsupported index item format. "
-                    f"Expected camera-pair fields, got keys: {list(item.keys())}"
-                )
-
-    return fold_dataset_idx
 
 
 def train(hparams: DictConfig, dataset_idx, fold: int):

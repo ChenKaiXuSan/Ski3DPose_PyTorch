@@ -29,7 +29,6 @@ from itertools import combinations
 import numpy as np
 from sklearn.model_selection import KFold
 
-
 KPT_VARIANTS = ("character", "pole", "ski")
 CAPTURE_NAME_PATTERN = re.compile(r"^capture_L(\d+)_A(\d+)$")
 
@@ -57,6 +56,10 @@ class CameraPairSample:
 
     sam3d_cam1_kpt3d_dir: Optional[str] = None
     sam3d_cam2_kpt3d_dir: Optional[str] = None
+
+    # 从sam3的到的mask
+    sam3_cam1_mask_ski_dir: Optional[str] = None
+    sam3_cam2_mask_ski_pole_dir: Optional[str] = None
 
     sequence_meta_path: Optional[str] = None
     joint_names_path: Optional[str] = None
@@ -109,6 +112,7 @@ class CameraPairCrossValidation:
             if sam3d_export_root
             else self.data_root / "modalities_from_sam3d"
         )
+        self.sam3_infer_root = self.data_root / "sam3_results" / "inference"
         self.num_persons = num_persons
         self.num_actions = num_actions
         self.num_cameras = num_cameras
@@ -123,7 +127,6 @@ class CameraPairCrossValidation:
                 "启用 use_layer_camera_filter 时，必须提供 selected_layers"
             )
 
-
         for layer_key, camera_ids in self.selected_cameras_per_layer.items():
             try:
                 int(layer_key)
@@ -134,9 +137,7 @@ class CameraPairCrossValidation:
             if int(layer_key) < 0:
                 raise ValueError("selected_cameras_per_layer 的层键必须为非负整数")
             if any(cam_id < 0 for cam_id in camera_ids):
-                raise ValueError(
-                    "selected_cameras_per_layer 的相机编号必须为非负整数"
-                )
+                raise ValueError("selected_cameras_per_layer 的相机编号必须为非负整数")
 
         if index_save_path is None:
             self.index_save_path: Path = (
@@ -263,6 +264,9 @@ class CameraPairCrossValidation:
                 kpt3d_dir = action_dir / "kpt3d"
                 meta_dir = action_dir / "meta"
                 sam3d_export_action = self.sam3d_export_root / person_id / action_id
+                sam3_infer_frames_root = (
+                    self.sam3_infer_root / person_id / action_id / "frames"
+                )
 
                 capture_dirs = sorted(
                     p
@@ -298,6 +302,10 @@ class CameraPairCrossValidation:
                     sam3d_cam1_kpt3d = sam3d_export_action / "kpt3d" / cam1_id
                     sam3d_cam2_kpt3d = sam3d_export_action / "kpt3d" / cam2_id
 
+                    # SAM3 outputs are organized by capture/prompt.
+                    sam3_cam1_mask_ski_dir = sam3_infer_frames_root / cam1_id / "ski"
+                    sam3_cam2_mask_ski_pole_dir = sam3_infer_frames_root / cam2_id / "ski_pole"
+
                     sequence_meta = meta_dir / "sequence.json"
                     joint_meta = meta_dir / "joint_names.json"
 
@@ -318,6 +326,8 @@ class CameraPairCrossValidation:
                         sam3d_cam2_kpt2d_dir=self._to_abs_path(sam3d_cam2_kpt2d),
                         sam3d_cam1_kpt3d_dir=self._to_abs_path(sam3d_cam1_kpt3d),
                         sam3d_cam2_kpt3d_dir=self._to_abs_path(sam3d_cam2_kpt3d),
+                        sam3_cam1_mask_ski_dir=self._to_abs_path(sam3_cam1_mask_ski_dir),
+                        sam3_cam2_mask_ski_pole_dir=self._to_abs_path(sam3_cam2_mask_ski_pole_dir),
                         sequence_meta_path=self._to_abs_path(sequence_meta),
                         joint_names_path=self._to_abs_path(joint_meta),
                     )
@@ -698,23 +708,3 @@ class CameraPairCrossValidation:
             fold_dict = self.prepare_folds()
             self.save_folds(fold_dict)
             return fold_dict
-
-
-# def main():
-#     """
-#     示例使用
-#     """
-#     for strategy in ["by_person", "by_action", "by_camera_pair"]:
-#         cv = CameraPairCrossValidation(
-#             data_root="/workspace/data/skiing_unity_dataset",
-#             split_strategy=strategy,
-#             n_splits=5,
-#             index_save_path=f"/workspace/data/skiing_unity_dataset/index_mapping/camera_pairs_{strategy}.json",
-#         )
-#         folds = cv(force_recreate=True)
-#         print(f"\n示例 - {strategy}:")
-#         print(f"折数: {len(folds)}")
-
-
-# if __name__ == "__main__":
-#     main()

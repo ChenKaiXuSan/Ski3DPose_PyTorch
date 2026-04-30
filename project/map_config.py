@@ -108,6 +108,9 @@ class UnityDataConfig:
     sam3d_cam1_kpt3d_dir: str
     sam3d_cam2_kpt3d_dir: str
 
+    sam3_cam1_mask_ski_dir: str
+    sam3_cam2_mask_ski_pole_dir: str
+
     sequence_meta_path: str
     joint_names_path: str
 
@@ -121,13 +124,12 @@ class TrueDataConfig:
     """真实数据的全局映射配置类，包含与真实数据相关的路径和标识符。"""
 
     person_id: str
-    left_cam_path: str
-    right_cam_path: str
 
     left_cam_frames_dir: str
     right_cam_frames_dir: str
 
     left_cam_sam3d_kpt2d_dir: str
     right_cam_sam3d_kpt2d_dir: str
+
     left_cam_sam3d_kpt3d_dir: str
     right_cam_sam3d_kpt3d_dir: str

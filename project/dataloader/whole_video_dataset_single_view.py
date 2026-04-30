@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from project.map_config import ID_TO_INDEX, TARGET_IDS, UnityDataConfig
@@ -53,6 +54,7 @@ class LabeledUnityDataset(Dataset):
         load_frames: bool = True,
         load_2d_kpt: bool = True,
         load_3d_kpt: bool = True,
+        target_t: Optional[int] = None,
     ) -> None:
         super().__init__()
         self._experiment = experiment
@@ -61,6 +63,9 @@ class LabeledUnityDataset(Dataset):
         self._load_frames = bool(load_frames)
         self._load_2d_kpt = bool(load_2d_kpt)
         self._load_3d_kpt = bool(load_3d_kpt)
+        self._target_t = int(target_t) if target_t is not None else None
+        if self._target_t is not None and self._target_t <= 0:
+            raise ValueError("target_t must be > 0 when provided.")
         if not self._load_frames and not self._load_2d_kpt and not self._load_3d_kpt:
             raise ValueError(
                 "At least one of load_frames/load_2d_kpt/load_3d_kpt must be enabled."
@@ -396,6 +401,55 @@ class LabeledUnityDataset(Dataset):
             return torch.arange(src_len, dtype=torch.long)
         # Same strategy as uniform temporal sampling: evenly spaced indices.
         return torch.linspace(0, src_len - 1, steps=dst_len).long()
+
+    @staticmethod
+    def _temporal_average_resample(tensor: torch.Tensor, target_t: int, time_dim: int) -> torch.Tensor:
+        """Resample temporal dimension with averaging semantics.
+
+        - Downsample: average over evenly partitioned temporal bins.
+        - Upsample: linear interpolation on temporal axis (weighted average).
+        """
+        if target_t <= 0:
+            raise ValueError("target_t must be > 0")
+
+        src_t = int(tensor.shape[time_dim])
+        if src_t == target_t:
+            return tensor
+
+        x = tensor.movedim(time_dim, 0)
+
+        if src_t > target_t:
+            edges = torch.linspace(0, src_t, steps=target_t + 1, device=x.device)
+            out_chunks: List[torch.Tensor] = []
+            for i in range(target_t):
+                s = int(torch.floor(edges[i]).item())
+                e = int(torch.ceil(edges[i + 1]).item())
+                if e <= s:
+                    e = min(s + 1, src_t)
+                out_chunks.append(x[s:e].mean(dim=0))
+            y = torch.stack(out_chunks, dim=0)
+            return y.movedim(0, time_dim)
+
+        # src_t < target_t
+        rest_shape = x.shape[1:]
+        x_flat = x.reshape(src_t, -1).transpose(0, 1).unsqueeze(0)  # (1,C_flat,T)
+        y_flat = F.interpolate(
+            x_flat,
+            size=target_t,
+            mode="linear",
+            align_corners=False,
+        )
+        y = y_flat.squeeze(0).transpose(0, 1).reshape((target_t,) + rest_shape)
+        return y.movedim(0, time_dim)
+
+    @classmethod
+    def _resample_frame_indices_avg(cls, frame_indices: torch.Tensor, target_t: int) -> torch.Tensor:
+        """Resample frame indices to target_t using average semantics and round to int."""
+        if frame_indices.numel() == target_t:
+            return frame_indices
+        idx_f = frame_indices.to(torch.float32)
+        idx_f = cls._temporal_average_resample(idx_f, target_t=target_t, time_dim=0)
+        return idx_f.round().to(torch.long)
 
     @staticmethod
     def _extract_cam_ide_token(cam_id: Any) -> str:
@@ -777,14 +831,20 @@ class LabeledUnityDataset(Dataset):
             # apply transform to single view
             cam1_frames_t = self._apply_transform(cam1_frames_t)
 
-            # trainer-compatible views: (B,C,T,H,W)
-            cam1_frames_t = cam1_frames_t.permute(1, 0, 2, 3).unsqueeze(0)
-            t_after = int(cam1_frames_t.shape[2])
+            # Single sample frame layout: (C,T,H,W); DataLoader adds batch dim.
+            cam1_frames_t = cam1_frames_t.permute(1, 0, 2, 3)
+            source_t = int(cam1_frames_t.shape[1])
         else:
-            t_after = len(common_idx)
+            source_t = len(common_idx)
 
-        src_t = len(common_idx)
-        sel = self._temporal_resample_indices(src_t, t_after)
+        target_t = self._target_t if self._target_t is not None else source_t
+        if target_t <= 0:
+            raise RuntimeError("Resolved target_t must be > 0")
+
+        if self._load_frames and cam1_frames_t is not None:
+            cam1_frames_t = self._temporal_average_resample(
+                cam1_frames_t, target_t=target_t, time_dim=1
+            )
 
         # Load keypoints for all variants
         variant_kpts: Dict[str, Dict[str, Any]] = {}
@@ -797,7 +857,6 @@ class LabeledUnityDataset(Dataset):
                 cam1_kpt2d_dir_variant = cam1_kpt2d_dir
                 kpt3d_dir_variant = kpt3d_dir
 
-            # Only apply filtering for 'character' variant; pole and ski keep all joints
             apply_filtering = variant == "character"
 
             cam1_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam3d_cam1_t, frame_indices_t = (
@@ -811,16 +870,26 @@ class LabeledUnityDataset(Dataset):
                 )
             )
 
-            # Apply temporal resampling
+            # Apply temporal average resampling to a unified target T.
             if cam1_kpt2d_t is not None:
-                cam1_kpt2d_t = cam1_kpt2d_t[sel]
+                cam1_kpt2d_t = self._temporal_average_resample(
+                    cam1_kpt2d_t, target_t=target_t, time_dim=0
+                )
             if gt_kpt3d_t is not None:
-                gt_kpt3d_t = gt_kpt3d_t[sel]
+                gt_kpt3d_t = self._temporal_average_resample(
+                    gt_kpt3d_t, target_t=target_t, time_dim=0
+                )
             if sam2d_cam1_t is not None:
-                sam2d_cam1_t = sam2d_cam1_t[sel]
+                sam2d_cam1_t = self._temporal_average_resample(
+                    sam2d_cam1_t, target_t=target_t, time_dim=0
+                )
             if sam3d_cam1_t is not None:
-                sam3d_cam1_t = sam3d_cam1_t[sel]
-            frame_indices_t = frame_indices_t[sel]
+                sam3d_cam1_t = self._temporal_average_resample(
+                    sam3d_cam1_t, target_t=target_t, time_dim=0
+                )
+            frame_indices_t = self._resample_frame_indices_avg(
+                frame_indices_t, target_t=target_t
+            )
 
             variant_kpts[variant] = {
                 "cam1_kpt2d": cam1_kpt2d_t,
@@ -920,6 +989,7 @@ def whole_video_dataset(
     load_frames: bool = True,
     load_2d_kpt: bool = True,
     load_3d_kpt: bool = True,
+    target_t: Optional[int] = None,
 ) -> LabeledUnityDataset:
     return LabeledUnityDataset(
         experiment=experiment,
@@ -928,4 +998,5 @@ def whole_video_dataset(
         load_frames=load_frames,
         load_2d_kpt=load_2d_kpt,
         load_3d_kpt=load_3d_kpt,
+        target_t=target_t,
     )

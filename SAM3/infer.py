@@ -79,6 +79,12 @@ def _flatten_path_chunks(path_chunks):
             yield p
 
 
+def _safe_set_postfix(pbar, **kwargs) -> None:
+    """Set tqdm postfix only when tqdm is available."""
+    if hasattr(pbar, "set_postfix"):
+        pbar.set_postfix(kwargs, refresh=False)
+
+
 class HFSam3ImageInferencer:
     """Batch image inference with HuggingFace Sam3Processor/Sam3Model."""
 
@@ -229,13 +235,14 @@ class HFSam3ImageInferencer:
                 chunked_files = _chunks(image_files, self.batch_size)
                 flat_files = _flatten_path_chunks(chunked_files)
                 progress_desc = f"SAM3 capture[{prompt_key}]"
-                for image_file in tqdm(
+                pbar = tqdm(
                     flat_files,
                     total=len(image_files),
                     desc=progress_desc,
                     unit="img",
                     leave=False,
-                ):
+                )
+                for processed_count, image_file in enumerate(pbar, start=1):
                     stem = image_file.stem
                     bbox = None
                     if sam3d_result_dir is not None:
@@ -247,6 +254,14 @@ class HFSam3ImageInferencer:
                     )
                     image_rgb = result["image_rgb"]
                     masks_np = result["masks"]
+                    det_count = int(result["scores"].shape[0])
+                    _safe_set_postfix(
+                        pbar,
+                        item=stem[-24:],
+                        bbox=("yes" if bbox is not None else "no"),
+                        det=det_count,
+                        done=f"{processed_count}/{len(image_files)}",
+                    )
 
                     np.savez_compressed(
                         prompt_infer_dir / f"{stem}.npz",
@@ -289,15 +304,14 @@ class HFSam3ImageInferencer:
                 prompt_out_dir.mkdir(parents=True, exist_ok=True)
 
             progress_desc = f"SAM3 video[{prompt_key}]"
-            for idx, frame in enumerate(
-                tqdm(
-                    frames,
-                    total=len(frames),
-                    desc=progress_desc,
-                    unit="frame",
-                    leave=False,
-                )
-            ):
+            pbar = tqdm(
+                frames,
+                total=len(frames),
+                desc=progress_desc,
+                unit="frame",
+                leave=False,
+            )
+            for idx, frame in enumerate(pbar):
                 stem = f"{frame_prefix}_{idx:06d}"
                 bbox = None
                 if sam3d_result_dir is not None:
@@ -308,6 +322,14 @@ class HFSam3ImageInferencer:
                 result = self.infer_mask(img=frame, bbox=bbox, prompt=prompt)
                 image_rgb = result["image_rgb"]
                 masks_np = result["masks"]
+                det_count = int(result["scores"].shape[0])
+                _safe_set_postfix(
+                    pbar,
+                    frame=stem[-24:],
+                    bbox=("yes" if bbox is not None else "no"),
+                    det=det_count,
+                    done=f"{idx + 1}/{len(frames)}",
+                )
 
                 np.savez_compressed(
                     prompt_infer_dir / f"{stem}.npz",
