@@ -45,14 +45,14 @@ echo "Started at   : $(date)"
 echo "=============================="
 
 # === 3. 执行生成 ===
-python -m cross_validation.generate_cv_index \
-    data.root_path="${DATA_ROOT}" \
-    data.cross_validation.strategies="${STRATEGIES}" \
-    data.cross_validation.n_splits="${N_SPLITS}" \
-    data.cross_validation.force_recreate="${FORCE_RECREATE}" \
-    data.cross_validation.use_layer_camera_filter="${USE_LAYER_CAMERA_FILTER}" \
-    data.cross_validation.selected_layers="${SELECTED_LAYERS}" \
-    data.cross_validation.selected_cameras_per_layer="${SELECTED_CAMERAS_PER_LAYER}"
+python -m cross_validation.main \
+    data.unity.root_path="${DATA_ROOT}" \
+    cross_validation.strategies="${STRATEGIES}" \
+    cross_validation.n_splits="${N_SPLITS}" \
+    cross_validation.force_recreate="${FORCE_RECREATE}" \
+    cross_validation.use_layer_camera_filter="${USE_LAYER_CAMERA_FILTER}" \
+    cross_validation.selected_layers="${SELECTED_LAYERS}" \
+    cross_validation.selected_cameras_per_layer="${SELECTED_CAMERAS_PER_LAYER}"
 
 echo "=============================="
 echo " 完成 at: $(date)"

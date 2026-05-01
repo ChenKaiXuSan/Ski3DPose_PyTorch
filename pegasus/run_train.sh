@@ -28,7 +28,7 @@ MODEL_BACKBONE="pose2equip"
 FUSE_METHOD="mamba_ssm"
 
 NUM_WORKERS=32
-BATCH_SIZE=16
+BATCH_SIZE=32
 
 # fold assignment:
 # - PBS array mode: use PBS_ARRAY_INDEX
@@ -45,15 +45,13 @@ echo "Fold: ${FOLD_ID}"
 
 # === 3. 执行训练（每个作业只跑一个 fold） ===
 python -m project.main \
-    data.root_path=${DATA_ROOT} \
+    data.unity.root_path=${DATA_ROOT} \
     data.index_mapping=${INDEX_MAPPING_DIR} \
     data.index_mapping_path=${INDEX_MAPPING_PATH} \
     train.gpu=0 \
     data.num_workers=${NUM_WORKERS} \
     data.batch_size=${BATCH_SIZE} \
     model.backbone=${MODEL_BACKBONE} \
-    model.fuse_method=${FUSE_METHOD} \
     train.fold=${FOLD_ID}
-
 
 echo "🏁 Train job finished at: $(date)"
