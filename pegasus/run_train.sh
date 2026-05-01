@@ -28,7 +28,7 @@ MODEL_BACKBONE="pose2equip"
 FUSE_METHOD="mamba_ssm"
 
 NUM_WORKERS=32
-BATCH_SIZE=32
+BATCH_SIZE=4
 
 # fold assignment:
 # - PBS array mode: use PBS_ARRAY_INDEX
