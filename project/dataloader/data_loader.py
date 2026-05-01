@@ -27,6 +27,7 @@ from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader
 from torchvision.transforms import (
     Compose,
+    Normalize,
     Resize,
 )
 
@@ -70,6 +71,7 @@ class UnityDataModule(LightningDataModule):
             [
                 Div255(),
                 Resize(size=[self._img_size, self._img_size]),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]
         )
 
@@ -96,6 +98,54 @@ class UnityDataModule(LightningDataModule):
                 f"Expected {name} shape (C,T,H,W) or (1,C,T,H,W), got {tuple(x.shape)}"
             )
         return x
+
+    @staticmethod
+    def _resize_video_batch_bcthw(
+        x: torch.Tensor,
+        target_hw: tuple[int, int],
+        mode: str,
+    ) -> torch.Tensor:
+        """Resize spatial size for batched video tensor (B,C,T,H,W)."""
+        if x.ndim != 5:
+            raise ValueError(f"Expected (B,C,T,H,W), got {tuple(x.shape)}")
+        b, c, t, _, _ = x.shape
+        y = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, x.shape[3], x.shape[4])
+        if mode == "nearest":
+            y = torch.nn.functional.interpolate(y, size=target_hw, mode=mode)
+        else:
+            y = torch.nn.functional.interpolate(
+                y,
+                size=target_hw,
+                mode=mode,
+                align_corners=False,
+            )
+        return y.reshape(b, t, c, target_hw[0], target_hw[1]).permute(0, 2, 1, 3, 4)
+
+    @staticmethod
+    def _temporal_select_indices(src_t: int, dst_t: int) -> torch.Tensor:
+        """Uniformly sample temporal indices from src_t to dst_t."""
+        if src_t <= 0 or dst_t <= 0:
+            raise ValueError(f"src_t and dst_t must be > 0, got src_t={src_t}, dst_t={dst_t}")
+        if src_t == dst_t:
+            return torch.arange(src_t, dtype=torch.long)
+        return torch.linspace(0, src_t - 1, steps=dst_t).round().long()
+
+    @classmethod
+    def _resample_time_by_index(
+        cls,
+        x: torch.Tensor,
+        target_t: int,
+        time_dim: int,
+        name: str,
+    ) -> torch.Tensor:
+        """Resample tensor along a temporal dimension using index selection."""
+        if not isinstance(x, torch.Tensor):
+            raise TypeError(f"Expected tensor for {name}, got {type(x)}")
+        src_t = int(x.shape[time_dim])
+        if src_t == target_t:
+            return x
+        idx = cls._temporal_select_indices(src_t, target_t).to(x.device)
+        return x.index_select(time_dim, idx)
 
     def _collate_fn(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Collate samples while preserving batch and temporal dimensions.
@@ -218,6 +268,89 @@ class UnityDataModule(LightningDataModule):
             )
             meta_rows.append(row)
 
+        # Normalize temporal length across samples in this batch.
+        # Use the shortest sequence to avoid introducing synthetic frames.
+        if frame_indices:
+            target_t = min(int(idx.numel()) for idx in frame_indices)
+            if target_t <= 0:
+                raise ValueError("Encountered empty frame_indices in batch.")
+
+            frame_indices = [
+                self._resample_time_by_index(idx, target_t=target_t, time_dim=0, name="frame_indices")
+                for idx in frame_indices
+            ]
+
+            if has_frames:
+                frames_cam1 = [
+                    self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="frames/cam1")
+                    for x in frames_cam1
+                ]
+                if has_cam2_frames and frames_cam2:
+                    frames_cam2 = [
+                        self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="frames/cam2")
+                        for x in frames_cam2
+                    ]
+
+            if has_masks:
+                if masks_ski:
+                    masks_ski = [
+                        self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="masks/ski")
+                        for x in masks_ski
+                    ]
+                if masks_ski_pole:
+                    masks_ski_pole = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=1, name="masks/ski_pole"
+                        )
+                        for x in masks_ski_pole
+                    ]
+
+            if has_2d:
+                for key, tensors in gt2d_variant_lists.items():
+                    gt2d_variant_lists[key] = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name=f"kpt2d_gt/{key}"
+                        )
+                        for x in tensors
+                    ]
+                if sam2d_cam1:
+                    sam2d_cam1 = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name="kpt2d_sam/character_cam1"
+                        )
+                        for x in sam2d_cam1
+                    ]
+                if sam2d_cam2:
+                    sam2d_cam2 = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name="kpt2d_sam/character_cam2"
+                        )
+                        for x in sam2d_cam2
+                    ]
+
+            if has_3d:
+                for key, tensors in gt3d_variant_lists.items():
+                    gt3d_variant_lists[key] = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name=f"kpt3d_gt/{key}"
+                        )
+                        for x in tensors
+                    ]
+                if sam3d_cam1:
+                    sam3d_cam1 = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name="kpt3d_sam/character_cam1"
+                        )
+                        for x in sam3d_cam1
+                    ]
+                if sam3d_cam2:
+                    sam3d_cam2 = [
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=0, name="kpt3d_sam/character_cam2"
+                        )
+                        for x in sam3d_cam2
+                    ]
+
         out: Dict[str, Any] = {
             "frame_indices": (
                 torch.stack(frame_indices, dim=0)
@@ -232,12 +365,40 @@ class UnityDataModule(LightningDataModule):
             if has_cam2_frames and frames_cam2:
                 out["frames"]["cam2"] = torch.stack(frames_cam2, dim=0)
 
+            # Explicitly keep frame size at configured img_size in case upstream transforms change.
+            target_hw = (int(self._img_size), int(self._img_size))
+            out["frames"]["cam1"] = self._resize_video_batch_bcthw(
+                out["frames"]["cam1"], target_hw=target_hw, mode="bilinear"
+            )
+            if has_cam2_frames and "cam2" in out["frames"]:
+                out["frames"]["cam2"] = self._resize_video_batch_bcthw(
+                    out["frames"]["cam2"], target_hw=target_hw, mode="bilinear"
+                )
+
         if has_masks:
             out["masks"] = {}
             if masks_ski:
                 out["masks"]["ski"] = torch.stack(masks_ski, dim=0)
             if masks_ski_pole:
                 out["masks"]["ski_pole"] = torch.stack(masks_ski_pole, dim=0)
+
+            # Explicitly resize masks to match frame spatial size (or img_size when frames are disabled).
+            if has_frames and "cam1" in out.get("frames", {}):
+                target_hw = (
+                    int(out["frames"]["cam1"].shape[3]),
+                    int(out["frames"]["cam1"].shape[4]),
+                )
+            else:
+                target_hw = (int(self._img_size), int(self._img_size))
+
+            if "ski" in out["masks"]:
+                out["masks"]["ski"] = self._resize_video_batch_bcthw(
+                    out["masks"]["ski"], target_hw=target_hw, mode="nearest"
+                )
+            if "ski_pole" in out["masks"]:
+                out["masks"]["ski_pole"] = self._resize_video_batch_bcthw(
+                    out["masks"]["ski_pole"], target_hw=target_hw, mode="nearest"
+                )
 
         if has_2d:
             # Concat 2D GT: multiple variant keys

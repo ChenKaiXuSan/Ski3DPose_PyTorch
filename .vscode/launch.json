@@ -47,6 +47,7 @@
         "train.view=single",
         "model.backbone=pose2equip"
       ]
-    }
+    },
+    
   ]
 }

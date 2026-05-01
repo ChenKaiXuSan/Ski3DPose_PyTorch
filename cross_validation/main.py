@@ -269,7 +269,7 @@ def hydra_main(cfg: Optional[DictConfig] = None) -> None:
         strategies=list(cv_cfg.strategies),
         n_splits=int(cv_cfg.n_splits),
         force_recreate=bool(cv_cfg.force_recreate),
-        sam3d_export_root=str(cfg.data.unity.get("sam3d_export_path", "")),
+        sam3d_export_root=str(cfg.data.get("sam3d_export_path", "")),
     )
 
 
