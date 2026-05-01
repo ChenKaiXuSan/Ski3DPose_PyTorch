@@ -106,7 +106,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     monitor_mode = "max"
     ckpt_filename = "{epoch}-{val/loss:.2f}-{val/video_acc:.4f}"
 
-    if hparams.train.view == "multi":
+    if hparams.train.view == "dual":
         if hparams.model.backbone == "dual2pose":
             classification_module = Dual2PoseTrainer(hparams)
             monitor_metric = "val/loss"

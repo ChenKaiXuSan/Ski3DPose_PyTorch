@@ -1,11 +1,13 @@
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import logging
 
+import numpy as np
 import torch
 from pytorch_lightning import (
     LightningModule,
 )
+from scipy.spatial.transform import Rotation
 
 from project.models.pose2equip_net import Pose2EquipNet
 from project.map_config import TARGET_SKELETON_CONNECTIONS_INDEX
@@ -79,6 +81,84 @@ def attachment_loss(pred_obj, human_3d, idx):
     loss += torch.norm(left_pole_grip - left_wrist, dim=-1).mean()
     loss += torch.norm(right_pole_grip - right_wrist, dim=-1).mean()
     return loss
+
+
+def compute_procrustes_alignment(
+    pred: np.ndarray, gt: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Procrustes alignment: find rotation/scale/translation to align pred to gt.
+    
+    Args:
+        pred: (N, 3) predicted points
+        gt: (N, 3) ground truth points
+    
+    Returns:
+        pred_aligned: (N, 3) aligned prediction
+        scale: scalar alignment scale
+        alignment_error: alignment RMSE
+    """
+    # Center both
+    pred_mean = pred.mean(axis=0, keepdims=True)
+    gt_mean = gt.mean(axis=0, keepdims=True)
+    pred_c = pred - pred_mean
+    gt_c = gt - gt_mean
+    
+    # SVD for rotation
+    H = pred_c.T @ gt_c
+    U, _, VT = np.linalg.svd(H)
+    R = (U @ VT).astype(np.float32)
+    
+    # Ensure proper rotation (det(R) = 1)
+    if np.linalg.det(R) < 0:
+        VT[-1] *= -1
+        R = (U @ VT).astype(np.float32)
+    
+    # Scale
+    scale = np.linalg.norm(gt_c) / (np.linalg.norm(pred_c) + 1e-8)
+    
+    # Align
+    pred_aligned = (scale * pred_c @ R.T) + gt_mean
+    alignment_error = np.linalg.norm(pred_aligned - gt, axis=1).mean()
+    
+    return pred_aligned, scale, alignment_error
+
+
+def evaluate_pose_metrics(
+    pred_obj: np.ndarray, gt_obj: np.ndarray
+) -> Dict[str, float]:
+    """Evaluate 3D equipment keypoint prediction metrics.
+    
+    Args:
+        pred_obj: (N, 8, 3) predicted object keypoints
+        gt_obj: (N, 8, 3) ground truth object keypoints
+    
+    Returns:
+        Dict with keys: mpjpe, pa_mpjpe, mpjpe_left_ski, mpjpe_right_ski, mpjpe_left_pole, mpjpe_right_pole
+    """
+    # MPJPE: direct Euclidean distance
+    mpjpe = np.linalg.norm(pred_obj - gt_obj, axis=2).mean()  # (N, 8) -> scalar
+    
+    # PA-MPJPE: Procrustes-aligned
+    pred_flat = pred_obj.reshape(-1, 3)  # (N*8, 3)
+    gt_flat = gt_obj.reshape(-1, 3)
+    pred_aligned, _, _ = compute_procrustes_alignment(pred_flat, gt_flat)
+    pa_mpjpe = np.linalg.norm(pred_aligned - gt_flat, axis=1).mean()
+    
+    # Per-object metrics
+    # Points mapping: 0,1=left_ski, 2,3=right_ski, 4,5=left_pole, 6,7=right_pole
+    left_ski_err = np.linalg.norm(pred_obj[:, :2] - gt_obj[:, :2], axis=2).mean()
+    right_ski_err = np.linalg.norm(pred_obj[:, 2:4] - gt_obj[:, 2:4], axis=2).mean()
+    left_pole_err = np.linalg.norm(pred_obj[:, 4:6] - gt_obj[:, 4:6], axis=2).mean()
+    right_pole_err = np.linalg.norm(pred_obj[:, 6:8] - gt_obj[:, 6:8], axis=2).mean()
+    
+    return {
+        "mpjpe": float(mpjpe),
+        "pa_mpjpe": float(pa_mpjpe),
+        "mpjpe_left_ski": float(left_ski_err),
+        "mpjpe_right_ski": float(right_ski_err),
+        "mpjpe_left_pole": float(left_pole_err),
+        "mpjpe_right_pole": float(right_pole_err),
+    }
 
 
 class Pose2EquipTrainer(LightningModule):
@@ -360,6 +440,42 @@ class Pose2EquipTrainer(LightningModule):
         }
         save_file = self.test_save_dir / "pose2equip_outputs.pt"
         torch.save(payload, save_file)
+        
+        # Compute performance metrics
+        pred_obj_np = payload["pred_obj"].numpy()
+        gt_obj_np = payload["gt_obj"].numpy()
+        metrics = evaluate_pose_metrics(pred_obj_np, gt_obj_np)
+        
+        # Save metrics to txt
+        metrics_file = self.test_save_dir / "evaluation_metrics.txt"
+        with open(metrics_file, "w") as f:
+            f.write("=" * 60 + "\n")
+            f.write("Equipment 3D Keypoint Prediction - Evaluation Report\n")
+            f.write("=" * 60 + "\n\n")
+            
+            f.write(f"Total samples evaluated: {pred_obj_np.shape[0]}\n\n")
+            
+            f.write("Global Metrics:\n")
+            f.write("-" * 60 + "\n")
+            f.write(f"  MPJPE (Mean Per Joint Position Error):  {metrics['mpjpe']:.4f} mm\n")
+            f.write(f"  PA-MPJPE (Procrustes Aligned):         {metrics['pa_mpjpe']:.4f} mm\n\n")
+            
+            f.write("Per-Object Metrics:\n")
+            f.write("-" * 60 + "\n")
+            f.write(f"  Left Ski MPJPE:   {metrics['mpjpe_left_ski']:.4f} mm\n")
+            f.write(f"  Right Ski MPJPE:  {metrics['mpjpe_right_ski']:.4f} mm\n")
+            f.write(f"  Left Pole MPJPE:  {metrics['mpjpe_left_pole']:.4f} mm\n")
+            f.write(f"  Right Pole MPJPE: {metrics['mpjpe_right_pole']:.4f} mm\n\n")
+            
+            ski_avg = (metrics['mpjpe_left_ski'] + metrics['mpjpe_right_ski']) / 2.0
+            pole_avg = (metrics['mpjpe_left_pole'] + metrics['mpjpe_right_pole']) / 2.0
+            f.write(f"  Avg Ski Error:    {ski_avg:.4f} mm\n")
+            f.write(f"  Avg Pole Error:   {pole_avg:.4f} mm\n\n")
+            
+            f.write("=" * 60 + "\n")
+        
+        logger.info(f"Evaluation metrics saved to {metrics_file}")
+        logger.info(f"MPJPE: {metrics['mpjpe']:.4f} mm, PA-MPJPE: {metrics['pa_mpjpe']:.4f} mm")
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(

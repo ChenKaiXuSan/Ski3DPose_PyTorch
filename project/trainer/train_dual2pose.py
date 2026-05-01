@@ -10,7 +10,7 @@ import torch
 from pytorch_lightning import LightningModule
 
 from project.map_config import ID_TO_INDEX, TARGET_SKELETON_CONNECTIONS_INDEX
-from project.models import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
+from project.models.dual2pose_net import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,17 @@ class Dual2PoseTrainer(LightningModule):
         # Default to confidence-free reliability modeling.
         use_conf = bool(getattr(model_cfg, "use_conf", False))
         predict_logvar = bool(getattr(model_cfg, "predict_logvar", False))
+        self.use_dino_features = bool(getattr(model_cfg, "use_dino_features", False))
+        self.dino_model_name = str(
+            getattr(
+                model_cfg,
+                "dino_model_name",
+                "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+            )
+        )
+        self.dino_freeze = bool(getattr(model_cfg, "dino_freeze", True))
+        self.dino_image_size = int(getattr(model_cfg, "dino_image_size", 224))
+        self.dino_feature_dim = int(getattr(model_cfg, "dino_feature_dim", 768))
 
         num_joints_character = len(ID_TO_INDEX)  # 15
 
@@ -43,6 +54,11 @@ class Dual2PoseTrainer(LightningModule):
             use_conf=use_conf,
             predict_logvar=predict_logvar,
             bone_edges=TARGET_SKELETON_CONNECTIONS_INDEX,
+            use_dino_features=self.use_dino_features,
+            dino_model_name=self.dino_model_name,
+            dino_freeze=self.dino_freeze,
+            dino_image_size=self.dino_image_size,
+            dino_feature_dim=self.dino_feature_dim,
         )
 
         logger.info(f"Created model: character=Dual2PoseNet({num_joints_character})")
@@ -68,9 +84,10 @@ class Dual2PoseTrainer(LightningModule):
         self.test_save_dir: Path = Path(self.save_root) / "pose_analysis"
 
         logger.info(
-            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s",
+            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s, use_dino_features=%s",
             use_conf,
             predict_logvar,
+            self.use_dino_features,
         )
 
     @staticmethod
@@ -155,17 +172,34 @@ class Dual2PoseTrainer(LightningModule):
 
         # ===== CHARACTER: Dual2PoseNet with SAM =====
         try:
-            p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(batch)
+            p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(
+                batch
+            )
 
             model = self.models["character"]
             loss_fn = self.loss_fns["character"]
 
+            img_feat_left = None
+            img_feat_right = None
+            if self.use_dino_features:
+                if frames_left is None or frames_right is None:
+                    raise ValueError(
+                        "use_dino_features=True requires frames.cam1 and frames.cam2 in batch"
+                    )
+
             # Forward pass
-            out = model(p_left=p_left, p_right=p_right)
+            out = model(
+                img_l=frames_left,
+                img_r=frames_right,
+                p_left=p_left,
+                p_right=p_right,
+            )
             p_hat = out["p_hat"]
             p0 = out["p0"]
             alpha = out["alpha"]
             logvar = out.get("logvar", None)
+            img_feat_left = out.get("img_feat_left", None)
+            img_feat_right = out.get("img_feat_right", None)
 
             # Reconstruct left/right poses from fused pose + reliability weight.
             # With delta = (p_left - p_right):
@@ -290,6 +324,18 @@ class Dual2PoseTrainer(LightningModule):
                 on_epoch=True,
                 batch_size=p_hat.shape[0],
             )
+            if (
+                self.use_dino_features
+                and img_feat_left is not None
+                and img_feat_right is not None
+            ):
+                self.log(
+                    f"{stage}/character/dino_feat_gap",
+                    torch.norm(img_feat_left - img_feat_right, dim=-1).mean(),
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=p_hat.shape[0],
+                )
 
             # Store results
             variant_results["character"] = {
@@ -301,6 +347,10 @@ class Dual2PoseTrainer(LightningModule):
                 "p_right_recon": p_right_recon,
                 "logvar": logvar,
             }
+            if img_feat_left is not None:
+                variant_results["character"]["img_feat_left"] = img_feat_left
+            if img_feat_right is not None:
+                variant_results["character"]["img_feat_right"] = img_feat_right
             if p_gt is not None:
                 variant_results["character"]["p_gt"] = p_gt
             if frames_left is not None:
@@ -353,6 +403,10 @@ class Dual2PoseTrainer(LightningModule):
                 pack_entry["p_left_recon"] = results["p_left_recon"].detach().cpu()
             if "p_right_recon" in results:
                 pack_entry["p_right_recon"] = results["p_right_recon"].detach().cpu()
+            if "img_feat_left" in results:
+                pack_entry["img_feat_left"] = results["img_feat_left"].detach().cpu()
+            if "img_feat_right" in results:
+                pack_entry["img_feat_right"] = results["img_feat_right"].detach().cpu()
             pack["variant_results"][variant] = pack_entry
             if results.get("logvar") is not None:
                 pack["variant_results"][variant]["logvar"] = (
@@ -377,6 +431,90 @@ class Dual2PoseTrainer(LightningModule):
         self.test_outputs.append(pack)
 
         return torch.tensor(0.0)
+
+    @staticmethod
+    def _safe_shape(x: Any) -> str:
+        if isinstance(x, torch.Tensor):
+            return str(tuple(x.shape))
+        return "N/A"
+
+    @staticmethod
+    def _safe_mpjpe(pred: Any, label: Any) -> float | None:
+        if not isinstance(pred, torch.Tensor) or not isinstance(label, torch.Tensor):
+            return None
+        if pred.shape != label.shape:
+            return None
+        if pred.ndim < 2 or pred.shape[-1] != 3:
+            return None
+        return float(torch.norm(pred - label, dim=-1).mean().item())
+
+    def _save_test_txt_report(
+        self, payload: Dict[str, Any], txt_file: Path, fold: str
+    ) -> None:
+        lines: List[str] = []
+        lines.append("=" * 72)
+        lines.append("Dual2Pose Test Report")
+        lines.append("=" * 72)
+        lines.append(f"fold: {fold}")
+        lines.append(f"num_test_steps: {len(self.test_outputs)}")
+        lines.append("")
+
+        variants = payload.get("variants", {}) if isinstance(payload, dict) else {}
+        if not isinstance(variants, dict) or len(variants) == 0:
+            lines.append("No variant outputs available.")
+        else:
+            for variant in sorted(variants.keys()):
+                data = variants[variant]
+                if not isinstance(data, dict):
+                    continue
+
+                p_hat = data.get("p_hat")
+                label = data.get("label")
+                alpha = data.get("alpha")
+                p_left = data.get("p_left")
+                p_right = data.get("p_right")
+                p_left_recon = data.get("p_left_recon")
+                p_right_recon = data.get("p_right_recon")
+
+                lines.append(f"[{variant}]")
+                lines.append(f"  p_hat_shape: {self._safe_shape(p_hat)}")
+                lines.append(f"  label_shape: {self._safe_shape(label)}")
+
+                mpjpe = self._safe_mpjpe(p_hat, label)
+                if mpjpe is not None:
+                    lines.append(f"  mpjpe: {mpjpe:.6f}")
+
+                if isinstance(alpha, torch.Tensor):
+                    lines.append(f"  alpha_mean: {float(alpha.mean().item()):.6f}")
+                    lines.append(f"  alpha_std: {float(alpha.std().item()):.6f}")
+
+                if isinstance(p_left, torch.Tensor) and isinstance(
+                    p_right, torch.Tensor
+                ):
+                    cross_view_gap = float(
+                        torch.norm(p_left - p_right, dim=-1).mean().item()
+                    )
+                    lines.append(f"  cross_view_gap: {cross_view_gap:.6f}")
+
+                if isinstance(p_left_recon, torch.Tensor) and isinstance(
+                    p_left, torch.Tensor
+                ):
+                    recon_left = float(
+                        torch.nn.functional.l1_loss(p_left_recon, p_left).item()
+                    )
+                    lines.append(f"  recon_left_l1: {recon_left:.6f}")
+
+                if isinstance(p_right_recon, torch.Tensor) and isinstance(
+                    p_right, torch.Tensor
+                ):
+                    recon_right = float(
+                        torch.nn.functional.l1_loss(p_right_recon, p_right).item()
+                    )
+                    lines.append(f"  recon_right_l1: {recon_right:.6f}")
+
+                lines.append("")
+
+        txt_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def on_test_epoch_end(self) -> None:
         if not hasattr(self, "test_outputs") or len(self.test_outputs) == 0:
@@ -428,6 +566,14 @@ class Dual2PoseTrainer(LightningModule):
                     variant_data["p_right_recon"] = torch.cat(
                         [x["p_right_recon"] for x in variant_outputs], dim=0
                     )
+                if all("img_feat_left" in x for x in variant_outputs):
+                    variant_data["img_feat_left"] = torch.cat(
+                        [x["img_feat_left"] for x in variant_outputs], dim=0
+                    )
+                if all("img_feat_right" in x for x in variant_outputs):
+                    variant_data["img_feat_right"] = torch.cat(
+                        [x["img_feat_right"] for x in variant_outputs], dim=0
+                    )
 
                 if all("label" in x for x in variant_outputs):
                     variant_data["label"] = torch.cat(
@@ -454,7 +600,12 @@ class Dual2PoseTrainer(LightningModule):
 
         save_file = save_dir / f"{fold}_pose_outputs.pt"
         torch.save(payload, save_file)
+
+        txt_file = save_dir / f"{fold}_pose_report.txt"
+        self._save_test_txt_report(payload=payload, txt_file=txt_file, fold=fold)
+
         logger.info("Saved pose predictions/labels to %s", save_file)
+        logger.info("Saved test report to %s", txt_file)
         logger.info("Variants saved: %s", list(payload["variants"].keys()))
 
     def configure_optimizers(self):

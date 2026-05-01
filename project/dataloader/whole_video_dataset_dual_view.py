@@ -13,7 +13,7 @@ TODO: 加载时间信息的时候，需要对每个数据段的T进行统一
 需要上采样/下采样把时间统一起来。
 Have a good code time :)
 -----
-Last Modified: Wednesday April 29th 2026 10:29:43 am
+Last Modified: Tuesday February 10th 2026 12:11:11 pm
 Modified By: the developer formerly known as Kaixu Chen at <chenkaixusan@gmail.com>
 -----
 Copyright (c) 2026 The University of Tsukuba
@@ -244,21 +244,35 @@ class LabeledUnityDataset(Dataset):
 
     @staticmethod
     def _load_mask_file(npz_path: Path) -> np.ndarray:
-        """Load one SAM mask npz and merge detections into one binary mask."""
+        """Load one SAM3 mask npz and return a fixed single-channel binary mask.
+
+        SAM may output variable number of instances per frame (V,H,W).
+        For stable batching and cross-class consistency, we merge all instances
+        into one semantic mask with shape (1,H,W).
+        """
         data = np.load(npz_path, allow_pickle=True)
         if "masks" not in data.files:
             raise KeyError(f"Missing 'masks' in SAM mask npz: {npz_path}")
 
         masks = np.asarray(data["masks"])
-        if masks.ndim < 2:
-            raise ValueError(f"Unexpected mask shape in {npz_path}: {masks.shape}")
-
         if masks.ndim == 2:
-            merged = masks
-        else:
-            merged = masks.reshape(-1, masks.shape[-2], masks.shape[-1]).max(axis=0)
+            # Already a single mask (H,W) -> (1,H,W)
+            merged = (masks > 0).astype(np.float32, copy=False)[None, ...]
+            return merged
 
-        return (merged > 0).astype(np.float32)
+        if masks.ndim != 3:
+            raise ValueError(
+                f"Expected SAM mask shape (V,H,W) or (H,W), got {tuple(masks.shape)} in {npz_path}"
+            )
+
+        if masks.shape[0] == 0:
+            # Keep spatial shape and return empty semantic mask.
+            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.float32)
+
+        # Merge all instances into one foreground mask and keep channel dim.
+        merged = np.any(masks > 0, axis=0).astype(np.float32, copy=False)
+        return merged[None, ...]
+
 
     @staticmethod
     def _is_empty_keypoint_array(arr: np.ndarray) -> bool:
