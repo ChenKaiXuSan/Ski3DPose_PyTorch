@@ -83,6 +83,62 @@ def attachment_loss(pred_obj, human_3d, idx):
     return loss
 
 
+def _bbox_diag_from_mask(mask_2d: torch.Tensor) -> torch.Tensor:
+    """Return bbox diagonal length for one binary mask tensor [H,W]."""
+    ys, xs = torch.where(mask_2d > 0.5)
+    if ys.numel() == 0:
+        return mask_2d.new_tensor(0.0)
+    h = (ys.max() - ys.min() + 1).float()
+    w = (xs.max() - xs.min() + 1).float()
+    return torch.sqrt(h * h + w * w)
+
+
+def mask_length_ratio_loss(
+    pred_obj: torch.Tensor,
+    ski_mask: torch.Tensor | None,
+    ski_pole_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    """Constrain 3D ski/pole length ratio with 2D mask extent ratio.
+
+    We only use ratio (not absolute scale) to avoid camera-scale ambiguity.
+    """
+    if ski_mask is None or ski_pole_mask is None:
+        return pred_obj.new_tensor(0.0)
+    if ski_mask.ndim != 4 or ski_pole_mask.ndim != 4:
+        return pred_obj.new_tensor(0.0)
+
+    # 3D predicted lengths [B]
+    pred_ski_len = 0.5 * (
+        torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
+        + torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
+    )
+    pred_pole_len = 0.5 * (
+        torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
+        + torch.norm(pred_obj[:, 6] - pred_obj[:, 7], dim=-1)
+    )
+
+    bsz = pred_obj.shape[0]
+    losses = []
+    eps = 1e-6
+    for b in range(bsz):
+        ski_m = ski_mask[b, 0]
+        ski_pole_m = ski_pole_mask[b, 0]
+        pole_only_m = torch.clamp(ski_pole_m - ski_m, min=0.0)
+
+        ski_extent = _bbox_diag_from_mask(ski_m)
+        pole_extent = _bbox_diag_from_mask(pole_only_m)
+        if ski_extent <= 0 or pole_extent <= 0:
+            continue
+
+        pred_ratio = pred_ski_len[b] / (pred_pole_len[b] + eps)
+        mask_ratio = ski_extent / (pole_extent + eps)
+        losses.append(torch.abs(torch.log(pred_ratio + eps) - torch.log(mask_ratio + eps)))
+
+    if len(losses) == 0:
+        return pred_obj.new_tensor(0.0)
+    return torch.stack(losses).mean()
+
+
 def compute_procrustes_alignment(
     pred: np.ndarray, gt: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -179,6 +235,7 @@ class Pose2EquipTrainer(LightningModule):
         self.loss_w_attach = float(getattr(args.pose2equip, "loss_w_attach", 0.1))
         self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
         self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))
+        self.loss_w_mask_len = float(getattr(args.pose2equip, "loss_w_mask_len", 0.05))
         self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
 
         # GT point reorder for object_3d target (8 points):
@@ -316,14 +373,20 @@ class Pose2EquipTrainer(LightningModule):
         lcontact = attachment_loss(pred_obj, human_3d, self.idx)
         llength = length_variance_loss(pred_obj)
         lsymmetry = symmetry_loss(pred_obj)
+        lmask_len = mask_length_ratio_loss(
+            pred_obj=pred_obj,
+            ski_mask=ski_mask,
+            ski_pole_mask=pole_mask,
+        )
         # Final objective:
-        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry
+        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry + w_mask_len * LmaskLen
         # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
             + self.loss_w_attach * lcontact
             + self.loss_w_len * llength
             + self.loss_w_sym * lsymmetry
+            + self.loss_w_mask_len * lmask_len
         )
 
         batch_size = human_3d.shape[0]
@@ -367,6 +430,13 @@ class Pose2EquipTrainer(LightningModule):
         self.log(
             f"{stage}/Lsymmetry",
             lsymmetry,
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/Lmask_len",
+            lmask_len,
             on_step=True,
             on_epoch=True,
             batch_size=batch_size,

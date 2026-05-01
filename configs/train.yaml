@@ -76,6 +76,7 @@ pose2equip:
   loss_w_attach: 0.1
   loss_w_len: 0.02
   loss_w_sym: 0.03
+  loss_w_mask_len: 0.05
 
   # 这里应该是过滤之后的idx
   left_ankle_idx: 10
