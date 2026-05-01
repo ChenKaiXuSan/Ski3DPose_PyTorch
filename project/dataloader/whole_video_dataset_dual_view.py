@@ -26,6 +26,7 @@ Date      	By	Comments
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from functools import lru_cache
 import logging
 import re
 from pathlib import Path
@@ -197,14 +198,23 @@ class LabeledUnityDataset(Dataset):
         return int(nums[-1])
 
     @classmethod
+    @lru_cache(maxsize=4096)
+    def _build_idx_file_map_cached(
+        cls, root_str: str, pattern: str
+    ) -> Tuple[Tuple[int, str], ...]:
+        root = Path(root_str)
+        out: List[Tuple[int, str]] = []
+        for p in sorted(root.glob(pattern)):
+            idx = cls._extract_last_int(p.stem)
+            out.append((idx, str(p)))
+        return tuple(out)
+
+    @classmethod
     def _build_idx_file_map(cls, root: Path, pattern: str) -> Dict[int, Path]:
         if not root.exists() or not root.is_dir():
             return {}
-        out: Dict[int, Path] = {}
-        for p in sorted(root.glob(pattern)):
-            idx = cls._extract_last_int(p.stem)
-            out[idx] = p
-        return out
+        pairs = cls._build_idx_file_map_cached(str(root.resolve()), pattern)
+        return {idx: Path(path_str) for idx, path_str in pairs}
 
     @staticmethod
     def _load_sam3d_file(npz_path: Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -257,7 +267,7 @@ class LabeledUnityDataset(Dataset):
         masks = np.asarray(data["masks"])
         if masks.ndim == 2:
             # Already a single mask (H,W) -> (1,H,W)
-            merged = (masks > 0).astype(np.float32, copy=False)[None, ...]
+            merged = (masks > 0)[None, ...]
             return merged
 
         if masks.ndim != 3:
@@ -267,10 +277,10 @@ class LabeledUnityDataset(Dataset):
 
         if masks.shape[0] == 0:
             # Keep spatial shape and return empty semantic mask.
-            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.float32)
+            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.bool_)
 
         # Merge all instances into one foreground mask and keep channel dim.
-        merged = np.any(masks > 0, axis=0).astype(np.float32, copy=False)
+        merged = np.any(masks > 0, axis=0)
         return merged[None, ...]
 
 
@@ -606,6 +616,10 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam2_kpt3d_dir: Path,
         common_idx: List[int],
         apply_filtering: bool = True,
+        sam3d_cam1_kpt2d_map: Optional[Dict[int, Path]] = None,
+        sam3d_cam2_kpt2d_map: Optional[Dict[int, Path]] = None,
+        sam3d_cam1_kpt3d_map: Optional[Dict[int, Path]] = None,
+        sam3d_cam2_kpt3d_map: Optional[Dict[int, Path]] = None,
     ) -> Tuple[
         Optional[torch.Tensor],
         Optional[torch.Tensor],
@@ -620,6 +634,10 @@ class LabeledUnityDataset(Dataset):
 
         Args:
             apply_filtering: If True, filter keypoints using TARGET_IDS. If False, keep all joints.
+            sam3d_cam1_kpt2d_map: Pre-built SAM cam1 2D map (reused across variants).
+            sam3d_cam2_kpt2d_map: Pre-built SAM cam2 2D map (reused across variants).
+            sam3d_cam1_kpt3d_map: Pre-built SAM cam1 3D map (reused across variants).
+            sam3d_cam2_kpt3d_map: Pre-built SAM cam2 3D map (reused across variants).
 
         Returns:
             (cam1_kpt2d_t, cam2_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam2d_cam2_t, sam3d_cam1_t, sam3d_cam2_t, frame_indices_t)
@@ -639,26 +657,30 @@ class LabeledUnityDataset(Dataset):
             if self._load_3d_kpt
             else {}
         )
-        sam3d_cam1_kpt2d_map = (
-            self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy")
-            if self._load_2d_kpt
-            else {}
-        )
-        sam3d_cam2_kpt2d_map = (
-            self._build_idx_file_map(sam3d_cam2_kpt2d_dir, "kpt2d_*.npy")
-            if self._load_2d_kpt
-            else {}
-        )
-        sam3d_cam1_kpt3d_map = (
-            self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy")
-            if self._load_3d_kpt
-            else {}
-        )
-        sam3d_cam2_kpt3d_map = (
-            self._build_idx_file_map(sam3d_cam2_kpt3d_dir, "kpt3d_*.npy")
-            if self._load_3d_kpt
-            else {}
-        )
+        if sam3d_cam1_kpt2d_map is None:
+            sam3d_cam1_kpt2d_map = (
+                self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy")
+                if self._load_2d_kpt
+                else {}
+            )
+        if sam3d_cam2_kpt2d_map is None:
+            sam3d_cam2_kpt2d_map = (
+                self._build_idx_file_map(sam3d_cam2_kpt2d_dir, "kpt2d_*.npy")
+                if self._load_2d_kpt
+                else {}
+            )
+        if sam3d_cam1_kpt3d_map is None:
+            sam3d_cam1_kpt3d_map = (
+                self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy")
+                if self._load_3d_kpt
+                else {}
+            )
+        if sam3d_cam2_kpt3d_map is None:
+            sam3d_cam2_kpt3d_map = (
+                self._build_idx_file_map(sam3d_cam2_kpt3d_dir, "kpt3d_*.npy")
+                if self._load_3d_kpt
+                else {}
+            )
 
         cam1_kpt2d: List[torch.Tensor] = []
         cam2_kpt2d: List[torch.Tensor] = []
@@ -786,31 +808,26 @@ class LabeledUnityDataset(Dataset):
                     sam3d_cam1.append(torch.from_numpy(sam1_3d))
                     sam3d_cam2.append(torch.from_numpy(sam2_3d))
 
-        src_t = len(common_idx)
-        sel = self._temporal_resample_indices(
-            src_t, src_t
-        )  # No resampling here, will be done in main method
-
         cam1_kpt2d_t = (
-            torch.stack(cam1_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
+            torch.stack(cam1_kpt2d, dim=0) if self._load_2d_kpt else None
         )
         cam2_kpt2d_t = (
-            torch.stack(cam2_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
+            torch.stack(cam2_kpt2d, dim=0) if self._load_2d_kpt else None
         )
-        gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0)[sel] if self._load_3d_kpt else None
+        gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0) if self._load_3d_kpt else None
         sam2d_cam1_t = (
-            torch.stack(sam2d_cam1, dim=0)[sel] if self._load_2d_kpt else None
+            torch.stack(sam2d_cam1, dim=0) if self._load_2d_kpt else None
         )
         sam2d_cam2_t = (
-            torch.stack(sam2d_cam2, dim=0)[sel] if self._load_2d_kpt else None
+            torch.stack(sam2d_cam2, dim=0) if self._load_2d_kpt else None
         )
         sam3d_cam1_t = (
-            torch.stack(sam3d_cam1, dim=0)[sel] if self._load_3d_kpt else None
+            torch.stack(sam3d_cam1, dim=0) if self._load_3d_kpt else None
         )
         sam3d_cam2_t = (
-            torch.stack(sam3d_cam2, dim=0)[sel] if self._load_3d_kpt else None
+            torch.stack(sam3d_cam2, dim=0) if self._load_3d_kpt else None
         )
-        frame_indices_t = torch.tensor(common_idx, dtype=torch.long)[sel]
+        frame_indices_t = torch.tensor(common_idx, dtype=torch.long)
 
         return (
             cam1_kpt2d_t,
@@ -1114,18 +1131,16 @@ class LabeledUnityDataset(Dataset):
                 torch.from_numpy(self._load_mask_file(mask_ski_pole_map[idx]))
                 for idx in common_idx
             ]
-            mask_ski_t = torch.stack(mask_ski, dim=0).unsqueeze(1)
-            mask_ski_pole_t = torch.stack(mask_ski_pole, dim=0).unsqueeze(1)
+            mask_ski_t = torch.stack(mask_ski, dim=0)
+            mask_ski_pole_t = torch.stack(mask_ski_pole, dim=0)
             mask_ski_t = self._temporal_average_resample(
                 mask_ski_t, target_t=t_after, time_dim=0
             )
             mask_ski_pole_t = self._temporal_average_resample(
                 mask_ski_pole_t, target_t=t_after, time_dim=0
             )
-            mask_ski_t = (mask_ski_t >= 0.5).to(torch.float32).permute(1, 0, 2, 3)
-            mask_ski_pole_t = (
-                (mask_ski_pole_t >= 0.5).to(torch.float32).permute(1, 0, 2, 3)
-            )
+            mask_ski_t = mask_ski_t.gt(0.5).to(torch.float32).permute(1, 0, 2, 3)
+            mask_ski_pole_t = mask_ski_pole_t.gt(0.5).to(torch.float32).permute(1, 0, 2, 3)
 
         src_t = len(common_idx)
         sel = self._temporal_resample_indices(src_t, t_after)
@@ -1164,6 +1179,10 @@ class LabeledUnityDataset(Dataset):
                 sam3d_cam2_kpt3d_dir=sam3d_cam2_kpt3d_dir,
                 common_idx=common_idx,
                 apply_filtering=apply_filtering,
+                sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map if self._load_2d_kpt else None,
+                sam3d_cam2_kpt2d_map=sam3d_cam2_kpt2d_map if self._load_2d_kpt else None,
+                sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map if self._load_3d_kpt else None,
+                sam3d_cam2_kpt3d_map=sam3d_cam2_kpt3d_map if self._load_3d_kpt else None,
             )
 
             # Apply temporal resampling

@@ -25,6 +25,7 @@ Date      	By	Comments
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from functools import lru_cache
 import logging
 import re
 from pathlib import Path
@@ -201,14 +202,23 @@ class LabeledUnityDataset(Dataset):
         return int(nums[-1])
 
     @classmethod
+    @lru_cache(maxsize=4096)
+    def _build_idx_file_map_cached(
+        cls, root_str: str, pattern: str
+    ) -> Tuple[Tuple[int, str], ...]:
+        root = Path(root_str)
+        out: List[Tuple[int, str]] = []
+        for p in sorted(root.glob(pattern)):
+            idx = cls._extract_last_int(p.stem)
+            out.append((idx, str(p)))
+        return tuple(out)
+
+    @classmethod
     def _build_idx_file_map(cls, root: Path, pattern: str) -> Dict[int, Path]:
         if not root.exists() or not root.is_dir():
             return {}
-        out: Dict[int, Path] = {}
-        for p in sorted(root.glob(pattern)):
-            idx = cls._extract_last_int(p.stem)
-            out[idx] = p
-        return out
+        pairs = cls._build_idx_file_map_cached(str(root.resolve()), pattern)
+        return {idx: Path(path_str) for idx, path_str in pairs}
 
     @staticmethod
     def _load_sam3d_file(npz_path: Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -261,7 +271,7 @@ class LabeledUnityDataset(Dataset):
         masks = np.asarray(data["masks"])
         if masks.ndim == 2:
             # Already a single mask (H,W) -> (1,H,W)
-            merged = (masks > 0).astype(np.float32, copy=False)[None, ...]
+            merged = (masks > 0)[None, ...]
             return merged
 
         if masks.ndim != 3:
@@ -271,10 +281,10 @@ class LabeledUnityDataset(Dataset):
 
         if masks.shape[0] == 0:
             # Keep spatial shape and return empty semantic mask.
-            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.float32)
+            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.bool_)
 
         # Merge all instances into one foreground mask and keep channel dim.
-        merged = np.any(masks > 0, axis=0).astype(np.float32, copy=False)
+        merged = np.any(masks > 0, axis=0)
         return merged[None, ...]
 
     @staticmethod
@@ -518,6 +528,8 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt3d_dir: Path,
         common_idx: List[int],
         apply_filtering: bool = True,
+        sam3d_cam1_kpt2d_map: Optional[Dict[int, Path]] = None,
+        sam3d_cam1_kpt3d_map: Optional[Dict[int, Path]] = None,
     ) -> Tuple[
         Optional[torch.Tensor],
         Optional[torch.Tensor],
@@ -543,16 +555,21 @@ class LabeledUnityDataset(Dataset):
             if self._load_3d_kpt
             else {}
         )
-        sam3d_cam1_kpt2d_map = (
-            self._build_idx_file_map(sam3d_cam1_kpt2d_dir, "kpt2d_*.npy")
-            if self._load_2d_kpt
-            else {}
-        )
-        sam3d_cam1_kpt3d_map = (
-            self._build_idx_file_map(sam3d_cam1_kpt3d_dir, "kpt3d_*.npy")
-            if self._load_3d_kpt
-            else {}
-        )
+        if self._load_2d_kpt:
+            if sam3d_cam1_kpt2d_map is None:
+                sam3d_cam1_kpt2d_map = self._build_idx_file_map(
+                    sam3d_cam1_kpt2d_dir, "kpt2d_*.npy"
+                )
+        else:
+            sam3d_cam1_kpt2d_map = {}
+
+        if self._load_3d_kpt:
+            if sam3d_cam1_kpt3d_map is None:
+                sam3d_cam1_kpt3d_map = self._build_idx_file_map(
+                    sam3d_cam1_kpt3d_dir, "kpt3d_*.npy"
+                )
+        else:
+            sam3d_cam1_kpt3d_map = {}
 
         cam1_kpt2d: List[torch.Tensor] = []
         gt_kpt3d: List[torch.Tensor] = []
@@ -637,22 +654,11 @@ class LabeledUnityDataset(Dataset):
                     # No filtering: keep all joints as-is
                     sam3d_cam1.append(torch.from_numpy(sam1_3d))
 
-        src_t = len(common_idx)
-        sel = self._temporal_resample_indices(
-            src_t, src_t
-        )  # No resampling here, will be done in main method
-
-        cam1_kpt2d_t = (
-            torch.stack(cam1_kpt2d, dim=0)[sel] if self._load_2d_kpt else None
-        )
-        gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0)[sel] if self._load_3d_kpt else None
-        sam2d_cam1_t = (
-            torch.stack(sam2d_cam1, dim=0)[sel] if self._load_2d_kpt else None
-        )
-        sam3d_cam1_t = (
-            torch.stack(sam3d_cam1, dim=0)[sel] if self._load_3d_kpt else None
-        )
-        frame_indices_t = torch.tensor(common_idx, dtype=torch.long)[sel]
+        cam1_kpt2d_t = torch.stack(cam1_kpt2d, dim=0) if self._load_2d_kpt else None
+        gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0) if self._load_3d_kpt else None
+        sam2d_cam1_t = torch.stack(sam2d_cam1, dim=0) if self._load_2d_kpt else None
+        sam3d_cam1_t = torch.stack(sam3d_cam1, dim=0) if self._load_3d_kpt else None
+        frame_indices_t = torch.tensor(common_idx, dtype=torch.long)
 
         return cam1_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam3d_cam1_t, frame_indices_t
 
@@ -859,8 +865,17 @@ class LabeledUnityDataset(Dataset):
                 f"{item.get('cam1_id', 'unknown')}"
             )
 
+        source_t = len(common_idx)
+        target_t = self._target_t if self._target_t is not None else source_t
+        if target_t <= 0:
+            raise RuntimeError("Resolved target_t must be > 0")
+
+        # Build one shared temporal selection first, then only read selected files.
+        temporal_sel = self._temporal_resample_indices(source_t, target_t)
+        selected_common_idx = [common_idx[int(i)] for i in temporal_sel.tolist()]
+
         cam1_frames: List[torch.Tensor] = []
-        for idx in common_idx:
+        for idx in selected_common_idx:
             if self._load_frames:
                 img1 = cv2.imread(str(cam1_frames_map[idx]), cv2.IMREAD_COLOR)
                 if img1 is None:
@@ -879,33 +894,17 @@ class LabeledUnityDataset(Dataset):
 
             # Single sample frame layout: (C,T,H,W); DataLoader adds batch dim.
             cam1_frames_t = cam1_frames_t.permute(1, 0, 2, 3)
-            source_t = int(cam1_frames_t.shape[1])
-        else:
-            source_t = len(common_idx)
-
-        target_t = self._target_t if self._target_t is not None else source_t
-        if target_t <= 0:
-            raise RuntimeError("Resolved target_t must be > 0")
-
-        # Use one shared temporal index selection for all modalities to keep
-        # frame/mask/keypoints aligned to the same frame indices.
-        temporal_sel = self._temporal_resample_indices(source_t, target_t)
-
-        if self._load_frames and cam1_frames_t is not None:
-            cam1_frames_t = cam1_frames_t.index_select(
-                1, temporal_sel.to(cam1_frames_t.device)
-            )
 
         mask_ski_t: Optional[torch.Tensor] = None
         mask_ski_pole_t: Optional[torch.Tensor] = None
         if self._load_mask:
             mask_ski = [
                 torch.from_numpy(self._load_mask_file(mask_ski_map[idx]))
-                for idx in common_idx
+                for idx in selected_common_idx
             ]
             mask_ski_pole = [
                 torch.from_numpy(self._load_mask_file(mask_ski_pole_map[idx]))
-                for idx in common_idx
+                for idx in selected_common_idx
             ]
 
             # Masks may come with mixed source resolutions (e.g. 288x288 and 1080x1920).
@@ -927,11 +926,15 @@ class LabeledUnityDataset(Dataset):
                 for m in mask_list:
                     if int(m.shape[-2]) != target_h or int(m.shape[-1]) != target_w:
                         # m: (1,H,W) -> interpolate expects (N,C,H,W)
-                        m = F.interpolate(
-                            m.unsqueeze(0),
-                            size=(target_h, target_w),
-                            mode="nearest",
-                        ).squeeze(0)
+                        m = (
+                            F.interpolate(
+                                m.unsqueeze(0).to(torch.float32),
+                                size=(target_h, target_w),
+                                mode="nearest",
+                            )
+                            .squeeze(0)
+                            .gt(0.5)
+                        )
                     out_masks.append(m)
                 return out_masks
 
@@ -941,30 +944,8 @@ class LabeledUnityDataset(Dataset):
             mask_ski_t = torch.stack(mask_ski, dim=0)  # t, v, h, w
             mask_ski_pole_t = torch.stack(mask_ski_pole, dim=0)  #
 
-            mask_ski_t = mask_ski_t.index_select(0, temporal_sel.to(mask_ski_t.device))
-            mask_ski_pole_t = mask_ski_pole_t.index_select(
-                0, temporal_sel.to(mask_ski_pole_t.device)
-            )
-
-            # Align mask spatial size with transformed frame size.
-            if self._load_frames and cam1_frames_t is not None:
-                target_h = int(cam1_frames_t.shape[2])
-                target_w = int(cam1_frames_t.shape[3])
-                mask_ski_t = F.interpolate(
-                    mask_ski_t,
-                    size=(target_h, target_w),
-                    mode="nearest",
-                )
-                mask_ski_pole_t = F.interpolate(
-                    mask_ski_pole_t,
-                    size=(target_h, target_w),
-                    mode="nearest",
-                )
-
-            mask_ski_t = (mask_ski_t >= 0.5).to(torch.float32).permute(1, 0, 2, 3)
-            mask_ski_pole_t = (
-                (mask_ski_pole_t >= 0.5).to(torch.float32).permute(1, 0, 2, 3)
-            )
+            mask_ski_t = mask_ski_t.to(torch.float32).permute(1, 0, 2, 3)
+            mask_ski_pole_t = mask_ski_pole_t.to(torch.float32).permute(1, 0, 2, 3)
 
         # Load keypoints for all variants
         variant_kpts: Dict[str, Dict[str, Any]] = {}
@@ -985,30 +966,11 @@ class LabeledUnityDataset(Dataset):
                     kpt3d_dir=kpt3d_dir_variant,
                     sam3d_cam1_kpt2d_dir=sam3d_cam1_kpt2d_dir,
                     sam3d_cam1_kpt3d_dir=sam3d_cam1_kpt3d_dir,
-                    common_idx=common_idx,
+                    common_idx=selected_common_idx,
                     apply_filtering=apply_filtering,
+                    sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map,
+                    sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map,
                 )
-            )
-
-            # Apply the same temporal selection as frames/masks.
-            if cam1_kpt2d_t is not None:
-                cam1_kpt2d_t = cam1_kpt2d_t.index_select(
-                    0, temporal_sel.to(cam1_kpt2d_t.device)
-                )
-            if gt_kpt3d_t is not None:
-                gt_kpt3d_t = gt_kpt3d_t.index_select(
-                    0, temporal_sel.to(gt_kpt3d_t.device)
-                )
-            if sam2d_cam1_t is not None:
-                sam2d_cam1_t = sam2d_cam1_t.index_select(
-                    0, temporal_sel.to(sam2d_cam1_t.device)
-                )
-            if sam3d_cam1_t is not None:
-                sam3d_cam1_t = sam3d_cam1_t.index_select(
-                    0, temporal_sel.to(sam3d_cam1_t.device)
-                )
-            frame_indices_t = frame_indices_t.index_select(
-                0, temporal_sel.to(frame_indices_t.device)
             )
 
             variant_kpts[variant] = {
