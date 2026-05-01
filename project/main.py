@@ -51,7 +51,6 @@ from project.trainer.train_pose2equip import Pose2EquipTrainer
 logger = logging.getLogger(__name__)
 
 
-
 def load_fold_dataset_idx_from_fold_json(
     config: DictConfig, fold: int
 ) -> Dict[str, List[UnityDataConfig]]:
@@ -108,14 +107,11 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     ckpt_filename = "{epoch}-{val/loss:.2f}-{val/video_acc:.4f}"
 
     if hparams.train.view == "multi":
-        if hparams.model.backbone == "3dcnn":
-            if hparams.model.fuse_method in ["ssm", "mamba", "mamba_ssm"]:
-                classification_module = Dual2PoseTrainer(hparams)
-                monitor_metric = "val/loss"
-                monitor_mode = "min"
-                ckpt_filename = "{epoch}-{val/loss:.4f}"
-            else:
-                raise ValueError("the experiment fuse method is not supported.")
+        if hparams.model.backbone == "dual2pose":
+            classification_module = Dual2PoseTrainer(hparams)
+            monitor_metric = "val/loss"
+            monitor_mode = "min"
+            ckpt_filename = "{epoch}-{val/loss:.4f}"
         else:
             raise ValueError("the experiment backbone is not supported.")
     elif hparams.train.view == "single":

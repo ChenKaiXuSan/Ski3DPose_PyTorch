@@ -54,9 +54,8 @@ data:
   batch_size: 4
 
 model:
-  backbone: pose2equip
+  backbone: pose2equip # dual2pose, pose2equip
 
-  fuse_method: mamba_ssm # add, mul, concat, none, late, avg, cross_atn, se_atn, pose_atn
   fusion_layers: 5 # the fuse layer number of the model, used for cross attention, se attention, etc.
   ablation_study: single # choices=[single, multi], help='the ablation study of the model, single means only one layer is used for fusion, multi means multiple layers are used for fusion'
 
@@ -83,9 +82,10 @@ pose2equip:
   right_ankle_idx: 11
   left_wrist_idx: 12
   right_wrist_idx: 13
+
   # GT点索引，应该和unity记录的GT点顺序一致，或者至少保证能正确选取对应的点进行训练
-  ski_gt_idx: [1, 2, 4, 5]
-  pole_gt_idx: [0, 1, 2, 3]
+  ski_gt_idx: [1, 2, 4, 5] # ski_l_front, ski_l_back, ski_r_front, ski_r_back
+  pole_gt_idx: [0, 1, 2, 3] # pole_l_handle, pole_l_tip, pole_r_handle, pole_r_tip
 
 experiment: ${model.backbone} # the experiment name, used for log path
 log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}

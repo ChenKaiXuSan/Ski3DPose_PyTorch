@@ -23,25 +23,123 @@ Date      	By	Comments
 import torch
 import torch.nn as nn
 from torchvision.models import resnet18, ResNet18_Weights
+from .stgcn import STGCN
+
 
 # =========================
 # Model
 # =========================
 class PoseEncoder(nn.Module):
-    def __init__(self, num_joints, hidden_dim=256):
+    """
+    ST-GCN-based pose encoder that takes in 3D joint positions and outputs a global feature vector.
+    """
+
+    def __init__(
+        self,
+        num_joints,
+        hidden_dim=256,
+        target_skeleton_connections_idx=None,
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(num_joints * 3, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+        self.num_joints = int(num_joints)
+        edges = self._normalize_edges(target_skeleton_connections_idx, self.num_joints)
+        if edges is None:
+            edges = self._default_edges(self.num_joints)
+
+        self.stgcn = STGCN(
+            num_joints=self.num_joints,
+            in_channels=3,
+            hidden_channels=(64, 64, 128, 128, hidden_dim),
+            edges=edges,
+            dropout=0.1,
+        )
+        self.dropout = nn.Dropout(p=0.1)
+
+    @staticmethod
+    def _default_edges(num_joints: int):
+        if num_joints == 15:
+            return [
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (1, 4),
+                (4, 5),
+                (5, 6),
+                (1, 7),
+                (7, 8),
+                (8, 9),
+                (7, 10),
+                (10, 11),
+                (11, 12),
+                (7, 13),
+                (13, 14),
+            ]
+        # Fallback: chain topology for unknown joint count.
+        return [(i, i + 1) for i in range(num_joints - 1)]
+
+    @staticmethod
+    def _normalize_edges(edges, num_joints: int):
+        """Normalize edge config to List[Tuple[int, int]].
+
+        Supports:
+        - [[u, v], [u, v], ...]
+        - [(u, v), (u, v), ...]
+        - [u0, v0, u1, v1, ...]
+        """
+        if edges is None:
+            return None
+
+        normalized = []
+        if (
+            isinstance(edges, (list, tuple))
+            and len(edges) > 0
+            and isinstance(edges[0], (list, tuple))
+        ):
+            for pair in edges:
+                if len(pair) != 2:
+                    raise ValueError(f"Invalid edge pair: {pair}")
+                u, v = int(pair[0]), int(pair[1])
+                if not (0 <= u < num_joints and 0 <= v < num_joints):
+                    raise ValueError(
+                        f"Edge out of range: ({u},{v}) for num_joints={num_joints}"
+                    )
+                normalized.append((u, v))
+            return normalized
+
+        if isinstance(edges, (list, tuple)) and len(edges) % 2 == 0:
+            vals = [int(x) for x in edges]
+            for i in range(0, len(vals), 2):
+                u, v = vals[i], vals[i + 1]
+                if not (0 <= u < num_joints and 0 <= v < num_joints):
+                    raise ValueError(
+                        f"Edge out of range: ({u},{v}) for num_joints={num_joints}"
+                    )
+                normalized.append((u, v))
+            return normalized
+
+        raise ValueError(
+            "target_skeleton_connections_idx must be list of pairs or flattened even-length list"
         )
 
     def forward(self, x):
-        # x: [B, J, 3]
-        b, j, c = x.shape
-        x = x.reshape(b, j * c)
-        return self.net(x)
+        # x: [B, J, 3] or [B, T, J, 3]
+        if x.ndim == 3:
+            if x.shape[1] != self.num_joints or x.shape[2] != 3:
+                raise ValueError(
+                    f"Expected pose shape [B,{self.num_joints},3], got {tuple(x.shape)}"
+                )
+            x = x.unsqueeze(1)  # [B, 1, J, 3]
+        elif x.ndim == 4:
+            if x.shape[2] != self.num_joints or x.shape[3] != 3:
+                raise ValueError(
+                    f"Expected pose shape [B,T,{self.num_joints},3], got {tuple(x.shape)}"
+                )
+        else:
+            raise ValueError(f"Unsupported pose rank: {tuple(x.shape)}")
+
+        x, _ = self.stgcn(x, return_features=True)  # [B, T, J, hidden_dim]
+        x = x.mean(dim=(1, 2))  # global avg pool over T and J
+        return self.dropout(x)
 
 
 class Pose2EquipNet(nn.Module):
@@ -53,6 +151,7 @@ class Pose2EquipNet(nn.Module):
         right_ankle_idx=14,
         left_wrist_idx=41,
         right_wrist_idx=62,
+        target_skeleton_connections_idx=None,
     ):
         super().__init__()
         self.left_ankle_idx = left_ankle_idx
@@ -60,7 +159,11 @@ class Pose2EquipNet(nn.Module):
         self.left_wrist_idx = left_wrist_idx
         self.right_wrist_idx = right_wrist_idx
 
-        self.pose_encoder = PoseEncoder(num_joints, hidden_dim)
+        self.pose_encoder = PoseEncoder(
+            num_joints=num_joints,
+            hidden_dim=hidden_dim,
+            target_skeleton_connections_idx=target_skeleton_connections_idx,
+        )
 
         # Fuse RGB + two equipment masks into a 3-channel tensor for ResNet.
         self.mask_fuse = nn.Sequential(
@@ -68,9 +171,11 @@ class Pose2EquipNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(16, 3, kernel_size=1),
         )
-        
+
         _resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.frame_encoder = nn.Sequential(*list(_resnet.children())[:-1])  # output: [B, 512, 1, 1]
+        self.frame_encoder = nn.Sequential(
+            *list(_resnet.children())[:-1]
+        )  # output: [B, 512, 1, 1]
         self.frame_proj = nn.Linear(512, hidden_dim)
         self.fuse = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),

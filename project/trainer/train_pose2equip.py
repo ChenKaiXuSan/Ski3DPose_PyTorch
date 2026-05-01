@@ -1,22 +1,32 @@
 from pathlib import Path
 from typing import Any, Dict, List
+import logging
 
 import torch
 from pytorch_lightning import (
     LightningModule,
 )
 
-from project.models.pose2equip import Pose2EquipNet
+from project.models.pose2equip_net import Pose2EquipNet
+from project.map_config import TARGET_SKELETON_CONNECTIONS_INDEX
+
+logger = logging.getLogger(__name__)
 
 
 # =========================
 # Loss
 # =========================
 def mpjpe(pred, gt):
+    """Mean per-point Euclidean distance on object keypoints."""
     return torch.norm(pred - gt, dim=-1).mean()
 
 
 def length_variance_loss(pred_obj):
+    """Penalize sample-wise length jitter in a batch.
+
+    We compute 4 equipment lengths (left/right ski, left/right pole) and
+    minimize their per-batch variance for geometric stability.
+    """
     # pred_obj: [B, 8, 3]
     left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
     right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
@@ -32,6 +42,7 @@ def length_variance_loss(pred_obj):
 
 
 def symmetry_loss(pred_obj):
+    """Encourage left/right symmetry by matching mean lengths."""
     # pred_obj: [B, 8, 3]
     left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
     right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
@@ -45,6 +56,12 @@ def symmetry_loss(pred_obj):
 
 
 def attachment_loss(pred_obj, human_3d, idx):
+    """Keep equipment anchors close to body anchors.
+
+    Constraints:
+    - ski center -> ankle
+    - pole grip  -> wrist
+    """
     # human_3d: [B, J, 3], pred_obj: [B, 8, 3]
     left_ankle = human_3d[:, idx["left_ankle"]]
     right_ankle = human_3d[:, idx["right_ankle"]]
@@ -75,14 +92,13 @@ class Pose2EquipTrainer(LightningModule):
             right_ankle_idx=args.pose2equip.right_ankle_idx,
             left_wrist_idx=args.pose2equip.left_wrist_idx,
             right_wrist_idx=args.pose2equip.right_wrist_idx,
+            target_skeleton_connections_idx=TARGET_SKELETON_CONNECTIONS_INDEX,
         )
         self.lr = float(args.loss.lr)
         self.weight_decay = float(getattr(args.pose2equip, "weight_decay", 1e-4))
         self.loss_w_attach = float(getattr(args.pose2equip, "loss_w_attach", 0.1))
         self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
-        self.loss_w_sym = float(
-            getattr(args.pose2equip, "loss_w_sym", self.loss_w_len)
-        )
+        self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))
         self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
 
         # GT point reorder for object_3d target (8 points):
@@ -121,6 +137,29 @@ class Pose2EquipTrainer(LightningModule):
 
         return torch.cat([ski_obj, pole_obj], dim=1)
 
+    @staticmethod
+    def _normalize_human_frame(human_frame: torch.Tensor) -> torch.Tensor:
+        """Normalize frame input for a ResNet backbone.
+
+        Accepts float/uint-like tensors in [0,255] or [0,1]. For RGB input,
+        applies ImageNet mean/std normalization.
+        """
+        if human_frame.ndim != 4:
+            raise ValueError(
+                f"Expected human_frame shape [B,C,H,W], got {tuple(human_frame.shape)}"
+            )
+
+        frame = human_frame.float()
+        if torch.isfinite(frame).all() and frame.max() > 1.5:
+            frame = frame / 255.0
+
+        if frame.shape[1] == 3:
+            mean = frame.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+            std = frame.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+            frame = (frame - mean) / std
+
+        return frame
+
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         # 只用cam 1 的结果进行训练
         human_3d = batch["kpt3d_sam"]["character_cam1"].float()  # [B, J, 3]
@@ -139,7 +178,7 @@ class Pose2EquipTrainer(LightningModule):
         pole_gt = _gt["pole"].float()  # [B, 4, 3]
         ski_gt = _gt["ski"].float()  # [B, 6, 3]
 
-        if human_3d.ndim == 4:
+        if human_3d.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
             bsz, t_steps = human_3d.shape[:2]
             human_3d = human_3d.reshape(
                 bsz * t_steps, human_3d.shape[2], human_3d.shape[3]
@@ -180,6 +219,9 @@ class Pose2EquipTrainer(LightningModule):
                     ski_mask.shape[4],
                 )
 
+        if human_frame is not None:
+            human_frame = self._normalize_human_frame(human_frame)
+
         object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
 
         out = self.model(
@@ -194,6 +236,9 @@ class Pose2EquipTrainer(LightningModule):
         lcontact = attachment_loss(pred_obj, human_3d, self.idx)
         llength = length_variance_loss(pred_obj)
         lsymmetry = symmetry_loss(pred_obj)
+        # Final objective:
+        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry
+        # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
             + self.loss_w_attach * lcontact
@@ -246,6 +291,25 @@ class Pose2EquipTrainer(LightningModule):
             on_epoch=True,
             batch_size=batch_size,
         )
+        self.log(
+            f"{stage}/len_mean",
+            out["lengths"].mean(),
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/len_std",
+            out["lengths"].std(unbiased=False),
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+
+        if stage == "train" and float(lcontact.detach().item()) < 1e-6:
+            logger.debug(
+                "Lcontact is near zero; current geometry anchors ski-center/pole-grip to ankle/wrist by design."
+            )
 
         if stage == "test":
             self.test_outputs.append(
