@@ -4,14 +4,14 @@
 #PBS -l elapstim_req=24:00:00
 #PBS -N pose2equip_train
 #PBS -t 0-2
-#PBS -o logs/pegasus/train_${PBS_SUBREQNO}.log
-#PBS -e logs/pegasus/train_${PBS_SUBREQNO}_err.log
+#PBS -o logs/pegasus/pose2equip/train_${PBS_SUBREQNO}.log
+#PBS -e logs/pegasus/pose2equip/train_${PBS_SUBREQNO}_err.log
 
 # === 1. 環境準備 ===
 PROJECT_ROOT="/work/SKIING/chenkaixu/code/Ski3DPose_PyTorch"
 cd "${PROJECT_ROOT}" || exit 1
 
-mkdir -p logs/pegasus/
+mkdir -p logs/pegasus/pose2equip
 
 source ${CONDA_PREFIX}/etc/profile.d/conda.sh
 conda deactivate
@@ -26,8 +26,8 @@ INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/use_layer_camera_filter_enabled/camera_
 
 MODEL_BACKBONE="pose2equip"
 
-NUM_WORKERS=32
-BATCH_SIZE=4
+NUM_WORKERS=30
+BATCH_SIZE=3
 
 # fold assignment:
 # - PBS array mode: use PBS_ARRAY_INDEX
