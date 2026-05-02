@@ -165,18 +165,24 @@ class Pose2EquipNet(nn.Module):
             target_skeleton_connections_idx=target_skeleton_connections_idx,
         )
 
-        # Fuse RGB + two equipment masks into a 3-channel tensor for ResNet.
-        self.mask_fuse = nn.Sequential(
-            nn.Conv2d(5, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 3, kernel_size=1),
-        )
-
+        # Frame branch (RGB): pretrained visual prior.
         _resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
         self.frame_encoder = nn.Sequential(
             *list(_resnet.children())[:-1]
         )  # output: [B, 512, 1, 1]
         self.frame_proj = nn.Linear(512, hidden_dim)
+
+        # Mask branch: independent backbone (separate parameters from frame branch).
+        _mask_resnet = resnet18(weights=None)
+        self.mask_encoder = nn.Sequential(*list(_mask_resnet.children())[:-1])
+        self.mask_proj = nn.Linear(512, hidden_dim)
+
+        # Learnable fusion between frame/mask branch features.
+        self.visual_fuse = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+        )
+
         self.fuse = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
@@ -187,12 +193,7 @@ class Pose2EquipNet(nn.Module):
         self.dir_head = nn.Linear(hidden_dim, 4 * 3)
         self.len_head = nn.Linear(hidden_dim, 4)
 
-    def _encode_frame(
-        self,
-        human_frame: torch.Tensor,
-        pole_mask: torch.Tensor | None = None,
-        ski_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def _encode_frame_branch(self, human_frame: torch.Tensor) -> torch.Tensor:
         # human_frame: [B, C, H, W]
         if human_frame.ndim != 4:
             raise ValueError(
@@ -206,38 +207,43 @@ class Pose2EquipNet(nn.Module):
                 f"Expected human_frame channels in (1,3), got {human_frame.shape[1]}"
             )
 
-        b, _, h, w = human_frame.shape
-        if pole_mask is None:
-            pole_mask = human_frame.new_zeros((b, 1, h, w))
-        if ski_mask is None:
-            ski_mask = human_frame.new_zeros((b, 1, h, w))
-
-        if pole_mask.ndim != 4 or pole_mask.shape[1] != 1:
-            raise ValueError(
-                f"Expected pole_mask shape [B,1,H,W], got {tuple(pole_mask.shape)}"
-            )
-        if ski_mask.ndim != 4 or ski_mask.shape[1] != 1:
-            raise ValueError(
-                f"Expected ski_mask shape [B,1,H,W], got {tuple(ski_mask.shape)}"
-            )
-        if pole_mask.shape[0] != b or ski_mask.shape[0] != b:
-            raise ValueError(
-                "Mask/frame batch mismatch: "
-                f"frame={b}, pole={pole_mask.shape[0]}, ski={ski_mask.shape[0]}"
-            )
-        if pole_mask.shape[-2:] != (h, w) or ski_mask.shape[-2:] != (h, w):
-            raise ValueError(
-                "Mask/frame spatial mismatch: "
-                f"frame={(h, w)}, pole={tuple(pole_mask.shape[-2:])}, ski={tuple(ski_mask.shape[-2:])}"
-            )
-
-        # 5-channel input: [RGB, pole_mask, ski_mask]
-        fused_input = torch.cat([human_frame, pole_mask, ski_mask], dim=1)
-        fused_rgb = self.mask_fuse(fused_input)
-
-        frame_feat = self.frame_encoder(fused_rgb).flatten(1)
+        frame_feat = self.frame_encoder(human_frame).flatten(1)
         frame_feat = self.frame_proj(frame_feat)
         return frame_feat
+
+    @staticmethod
+    def _validate_mask_shape(mask: torch.Tensor, name: str, b: int, h: int, w: int):
+        if mask.ndim != 4 or mask.shape[1] != 1:
+            raise ValueError(f"Expected {name} shape [B,1,H,W], got {tuple(mask.shape)}")
+        if mask.shape[0] != b:
+            raise ValueError(f"{name}/frame batch mismatch: frame={b}, {name}={mask.shape[0]}")
+        if mask.shape[-2:] != (h, w):
+            raise ValueError(
+                f"{name}/frame spatial mismatch: frame={(h, w)}, {name}={tuple(mask.shape[-2:])}"
+            )
+
+    def _encode_mask_branch(
+        self,
+        pole_mask: torch.Tensor | None,
+        ski_mask: torch.Tensor | None,
+        ref_frame: torch.Tensor,
+    ) -> torch.Tensor:
+        # Build a dedicated mask visual branch from [pole_mask, ski_mask].
+        b, _, h, w = ref_frame.shape
+        if pole_mask is None:
+            pole_mask = ref_frame.new_zeros((b, 1, h, w))
+        if ski_mask is None:
+            ski_mask = ref_frame.new_zeros((b, 1, h, w))
+
+        self._validate_mask_shape(pole_mask, "pole_mask", b, h, w)
+        self._validate_mask_shape(ski_mask, "ski_mask", b, h, w)
+
+        # 2-channel masks -> pseudo RGB for the shared ResNet image encoder.
+        zeros = ref_frame.new_zeros((b, 1, h, w))
+        mask_rgb = torch.cat([pole_mask, ski_mask, zeros], dim=1)
+        mask_feat = self.mask_encoder(mask_rgb).flatten(1)
+        mask_feat = self.mask_proj(mask_feat)
+        return mask_feat
 
     def forward(
         self,
@@ -249,20 +255,22 @@ class Pose2EquipNet(nn.Module):
         # human_3d: [B, J, 3]
         # human_frame: [B, C, H, W]
         # pole_mask/ski_mask: [B, 1, H, W]
-
+        
         equip_feat = self.pose_encoder(human_3d)
         b, _, _ = human_3d.shape
 
-        frame_feat = self._encode_frame(
-            human_frame=human_frame,
+        frame_feat = self._encode_frame_branch(human_frame=human_frame)
+        mask_feat = self._encode_mask_branch(
             pole_mask=pole_mask,
             ski_mask=ski_mask,
+            ref_frame=human_frame,
         )
+        visual_feat = self.visual_fuse(torch.cat([frame_feat, mask_feat], dim=-1))
         if frame_feat.shape[0] != b:
             raise ValueError(
                 f"Batch mismatch between pose and frame: {b} vs {frame_feat.shape[0]}"
             )
-        equip_feat = self.fuse(torch.cat([equip_feat, frame_feat], dim=-1))
+        equip_feat = self.fuse(torch.cat([equip_feat, visual_feat], dim=-1))
 
         directions = self.dir_head(equip_feat).reshape(b, 4, 3)
         directions = torch.nn.functional.normalize(directions, dim=-1)

@@ -20,14 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
+from project.dataloader.whole_video_dataset_single_view import LabeledUnityDataset
 from project.map_config import (
     ID_TO_INDEX,
     SKELETON_CONNECTIONS,
     TARGET_IDS,
     UNITY_MHR70_MAPPING,
 )
-from project.models.pose2equip import Pose2EquipNet
+from project.models.pose2equip_net import Pose2EquipNet
 
 EQUIP_LABELS = [
     "left_ski_tip",
@@ -323,7 +323,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-04-29/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-01/fold_0/checkpoints/fold_0"
         ),
         help="Pose2Equip checkpoint directory (or its parent).",
     )

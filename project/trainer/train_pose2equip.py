@@ -132,22 +132,57 @@ def mask_length_ratio_loss(
 
         pred_ratio = pred_ski_len[b] / (pred_pole_len[b] + eps)
         mask_ratio = ski_extent / (pole_extent + eps)
-        losses.append(torch.abs(torch.log(pred_ratio + eps) - torch.log(mask_ratio + eps)))
+        losses.append(
+            torch.abs(torch.log(pred_ratio + eps) - torch.log(mask_ratio + eps))
+        )
 
     if len(losses) == 0:
         return pred_obj.new_tensor(0.0)
     return torch.stack(losses).mean()
 
 
+def equipment_segment_lengths(obj: torch.Tensor) -> torch.Tensor:
+    """Return 4 segment lengths from equipment keypoints.
+
+    Output order: [left_ski, right_ski, left_pole, right_pole], shape [B, 4].
+    """
+    if obj.ndim != 3 or obj.shape[1] != 8 or obj.shape[2] != 3:
+        raise ValueError(f"Expected object shape [B,8,3], got {tuple(obj.shape)}")
+
+    return torch.stack(
+        [
+            torch.norm(obj[:, 0] - obj[:, 1], dim=-1),
+            torch.norm(obj[:, 2] - obj[:, 3], dim=-1),
+            torch.norm(obj[:, 4] - obj[:, 5], dim=-1),
+            torch.norm(obj[:, 6] - obj[:, 7], dim=-1),
+        ],
+        dim=-1,
+    )
+
+
+def absolute_length_loss(pred_obj: torch.Tensor, gt_obj: torch.Tensor) -> torch.Tensor:
+    """Supervise absolute equipment lengths with SmoothL1.
+
+    Segment order:
+      0: left_ski  (0,1)
+      1: right_ski (2,3)
+      2: left_pole (4,5)
+      3: right_pole(6,7)
+    """
+    pred_len = equipment_segment_lengths(pred_obj)
+    gt_len = equipment_segment_lengths(gt_obj)
+    return torch.nn.functional.smooth_l1_loss(pred_len, gt_len)
+
+
 def compute_procrustes_alignment(
     pred: np.ndarray, gt: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """Procrustes alignment: find rotation/scale/translation to align pred to gt.
-    
+
     Args:
         pred: (N, 3) predicted points
         gt: (N, 3) ground truth points
-    
+
     Returns:
         pred_aligned: (N, 3) aligned prediction
         scale: scalar alignment scale
@@ -158,55 +193,53 @@ def compute_procrustes_alignment(
     gt_mean = gt.mean(axis=0, keepdims=True)
     pred_c = pred - pred_mean
     gt_c = gt - gt_mean
-    
+
     # SVD for rotation
     H = pred_c.T @ gt_c
     U, _, VT = np.linalg.svd(H)
     R = (U @ VT).astype(np.float32)
-    
+
     # Ensure proper rotation (det(R) = 1)
     if np.linalg.det(R) < 0:
         VT[-1] *= -1
         R = (U @ VT).astype(np.float32)
-    
+
     # Scale
     scale = np.linalg.norm(gt_c) / (np.linalg.norm(pred_c) + 1e-8)
-    
+
     # Align
     pred_aligned = (scale * pred_c @ R.T) + gt_mean
     alignment_error = np.linalg.norm(pred_aligned - gt, axis=1).mean()
-    
+
     return pred_aligned, scale, alignment_error
 
 
-def evaluate_pose_metrics(
-    pred_obj: np.ndarray, gt_obj: np.ndarray
-) -> Dict[str, float]:
+def evaluate_pose_metrics(pred_obj: np.ndarray, gt_obj: np.ndarray) -> Dict[str, float]:
     """Evaluate 3D equipment keypoint prediction metrics.
-    
+
     Args:
         pred_obj: (N, 8, 3) predicted object keypoints
         gt_obj: (N, 8, 3) ground truth object keypoints
-    
+
     Returns:
         Dict with keys: mpjpe, pa_mpjpe, mpjpe_left_ski, mpjpe_right_ski, mpjpe_left_pole, mpjpe_right_pole
     """
     # MPJPE: direct Euclidean distance
     mpjpe = np.linalg.norm(pred_obj - gt_obj, axis=2).mean()  # (N, 8) -> scalar
-    
+
     # PA-MPJPE: Procrustes-aligned
     pred_flat = pred_obj.reshape(-1, 3)  # (N*8, 3)
     gt_flat = gt_obj.reshape(-1, 3)
     pred_aligned, _, _ = compute_procrustes_alignment(pred_flat, gt_flat)
     pa_mpjpe = np.linalg.norm(pred_aligned - gt_flat, axis=1).mean()
-    
+
     # Per-object metrics
     # Points mapping: 0,1=left_ski, 2,3=right_ski, 4,5=left_pole, 6,7=right_pole
     left_ski_err = np.linalg.norm(pred_obj[:, :2] - gt_obj[:, :2], axis=2).mean()
     right_ski_err = np.linalg.norm(pred_obj[:, 2:4] - gt_obj[:, 2:4], axis=2).mean()
     left_pole_err = np.linalg.norm(pred_obj[:, 4:6] - gt_obj[:, 4:6], axis=2).mean()
     right_pole_err = np.linalg.norm(pred_obj[:, 6:8] - gt_obj[:, 6:8], axis=2).mean()
-    
+
     return {
         "mpjpe": float(mpjpe),
         "pa_mpjpe": float(pa_mpjpe),
@@ -236,6 +269,7 @@ class Pose2EquipTrainer(LightningModule):
         self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
         self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))
         self.loss_w_mask_len = float(getattr(args.pose2equip, "loss_w_mask_len", 0.05))
+        self.loss_w_len_abs = float(getattr(args.pose2equip, "loss_w_len_abs", 0.2))
         self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
 
         # GT point reorder for object_3d target (8 points):
@@ -274,46 +308,24 @@ class Pose2EquipTrainer(LightningModule):
 
         return torch.cat([ski_obj, pole_obj], dim=1)
 
-    @staticmethod
-    def _normalize_human_frame(human_frame: torch.Tensor) -> torch.Tensor:
-        """Normalize frame input for a ResNet backbone.
-
-        Accepts float/uint-like tensors in [0,255] or [0,1]. For RGB input,
-        applies ImageNet mean/std normalization.
-        """
-        if human_frame.ndim != 4:
-            raise ValueError(
-                f"Expected human_frame shape [B,C,H,W], got {tuple(human_frame.shape)}"
-            )
-
-        frame = human_frame.float()
-        if torch.isfinite(frame).all() and frame.max() > 1.5:
-            frame = frame / 255.0
-
-        if frame.shape[1] == 3:
-            mean = frame.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-            std = frame.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-            frame = (frame - mean) / std
-
-        return frame
-
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         # 只用cam 1 的结果进行训练
-        human_3d = batch["kpt3d_sam"]["character_cam1"].float()  # [B, J, 3]
+        human_3d = batch["kpt3d_sam"]["character_cam1"].float()  # [B, t, J, 3]
         human_frame = None
         pole_mask = None
         ski_mask = None
         if isinstance(batch.get("frames"), dict) and "cam1" in batch["frames"]:
-            human_frame = batch["frames"]["cam1"].float()
+            human_frame = batch["frames"]["cam1"].float()  # b, c, t, h, w
         if isinstance(batch.get("masks"), dict):
             if "ski_pole" in batch["masks"]:
-                pole_mask = batch["masks"]["ski_pole"].float()
+                pole_mask = batch["masks"]["ski_pole"].float()  # b, 1, t, h, w
             if "ski" in batch["masks"]:
-                ski_mask = batch["masks"]["ski"].float()
+                ski_mask = batch["masks"]["ski"].float()  # b, 1, t, h, w
 
+        # GT fron Unity
         _gt = batch["kpt3d_gt"]
-        pole_gt = _gt["pole"].float()  # [B, 4, 3]
-        ski_gt = _gt["ski"].float()  # [B, 6, 3]
+        pole_gt = _gt["pole"].float()  # [B, t, 4, 3]
+        ski_gt = _gt["ski"].float()  # [B, t, 6, 3]
 
         if human_3d.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
             bsz, t_steps = human_3d.shape[:2]
@@ -356,9 +368,6 @@ class Pose2EquipTrainer(LightningModule):
                     ski_mask.shape[4],
                 )
 
-        if human_frame is not None:
-            human_frame = self._normalize_human_frame(human_frame)
-
         object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
 
         out = self.model(
@@ -378,8 +387,18 @@ class Pose2EquipTrainer(LightningModule):
             ski_mask=ski_mask,
             ski_pole_mask=pole_mask,
         )
+        l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
+        pred_len = equipment_segment_lengths(pred_obj)
+        gt_len = equipment_segment_lengths(object_gt)
+
+        pred_ski_len_mean = 0.5 * (pred_len[:, 0].mean() + pred_len[:, 1].mean())
+        pred_pole_len_mean = 0.5 * (pred_len[:, 2].mean() + pred_len[:, 3].mean())
+        gt_ski_len_mean = 0.5 * (gt_len[:, 0].mean() + gt_len[:, 1].mean())
+        gt_pole_len_mean = 0.5 * (gt_len[:, 2].mean() + gt_len[:, 3].mean())
+
         # Final objective:
-        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry + w_mask_len * LmaskLen
+        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry
+        #       + w_mask_len * LmaskLen + w_len_abs * LlenAbs
         # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
@@ -387,6 +406,7 @@ class Pose2EquipTrainer(LightningModule):
             + self.loss_w_len * llength
             + self.loss_w_sym * lsymmetry
             + self.loss_w_mask_len * lmask_len
+            + self.loss_w_len_abs * l_len_abs
         )
 
         batch_size = human_3d.shape[0]
@@ -442,6 +462,13 @@ class Pose2EquipTrainer(LightningModule):
             batch_size=batch_size,
         )
         self.log(
+            f"{stage}/Llen_abs",
+            l_len_abs,
+            on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
             f"{stage}/len_mean",
             out["lengths"].mean(),
             on_step=True,
@@ -452,6 +479,34 @@ class Pose2EquipTrainer(LightningModule):
             f"{stage}/len_std",
             out["lengths"].std(unbiased=False),
             on_step=True,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/pred_ski_len_mean",
+            pred_ski_len_mean,
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/pred_pole_len_mean",
+            pred_pole_len_mean,
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/gt_ski_len_mean",
+            gt_ski_len_mean,
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/gt_pole_len_mean",
+            gt_pole_len_mean,
+            on_step=False,
             on_epoch=True,
             batch_size=batch_size,
         )
@@ -510,42 +565,48 @@ class Pose2EquipTrainer(LightningModule):
         }
         save_file = self.test_save_dir / "pose2equip_outputs.pt"
         torch.save(payload, save_file)
-        
+
         # Compute performance metrics
         pred_obj_np = payload["pred_obj"].numpy()
         gt_obj_np = payload["gt_obj"].numpy()
         metrics = evaluate_pose_metrics(pred_obj_np, gt_obj_np)
-        
+
         # Save metrics to txt
         metrics_file = self.test_save_dir / "evaluation_metrics.txt"
         with open(metrics_file, "w") as f:
             f.write("=" * 60 + "\n")
             f.write("Equipment 3D Keypoint Prediction - Evaluation Report\n")
             f.write("=" * 60 + "\n\n")
-            
+
             f.write(f"Total samples evaluated: {pred_obj_np.shape[0]}\n\n")
-            
+
             f.write("Global Metrics:\n")
             f.write("-" * 60 + "\n")
-            f.write(f"  MPJPE (Mean Per Joint Position Error):  {metrics['mpjpe']:.4f} mm\n")
-            f.write(f"  PA-MPJPE (Procrustes Aligned):         {metrics['pa_mpjpe']:.4f} mm\n\n")
-            
+            f.write(
+                f"  MPJPE (Mean Per Joint Position Error):  {metrics['mpjpe']:.4f} mm\n"
+            )
+            f.write(
+                f"  PA-MPJPE (Procrustes Aligned):         {metrics['pa_mpjpe']:.4f} mm\n\n"
+            )
+
             f.write("Per-Object Metrics:\n")
             f.write("-" * 60 + "\n")
             f.write(f"  Left Ski MPJPE:   {metrics['mpjpe_left_ski']:.4f} mm\n")
             f.write(f"  Right Ski MPJPE:  {metrics['mpjpe_right_ski']:.4f} mm\n")
             f.write(f"  Left Pole MPJPE:  {metrics['mpjpe_left_pole']:.4f} mm\n")
             f.write(f"  Right Pole MPJPE: {metrics['mpjpe_right_pole']:.4f} mm\n\n")
-            
-            ski_avg = (metrics['mpjpe_left_ski'] + metrics['mpjpe_right_ski']) / 2.0
-            pole_avg = (metrics['mpjpe_left_pole'] + metrics['mpjpe_right_pole']) / 2.0
+
+            ski_avg = (metrics["mpjpe_left_ski"] + metrics["mpjpe_right_ski"]) / 2.0
+            pole_avg = (metrics["mpjpe_left_pole"] + metrics["mpjpe_right_pole"]) / 2.0
             f.write(f"  Avg Ski Error:    {ski_avg:.4f} mm\n")
             f.write(f"  Avg Pole Error:   {pole_avg:.4f} mm\n\n")
-            
+
             f.write("=" * 60 + "\n")
-        
+
         logger.info(f"Evaluation metrics saved to {metrics_file}")
-        logger.info(f"MPJPE: {metrics['mpjpe']:.4f} mm, PA-MPJPE: {metrics['pa_mpjpe']:.4f} mm")
+        logger.info(
+            f"MPJPE: {metrics['mpjpe']:.4f} mm, PA-MPJPE: {metrics['pa_mpjpe']:.4f} mm"
+        )
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
