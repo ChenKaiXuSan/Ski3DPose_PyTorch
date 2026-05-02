@@ -263,8 +263,9 @@ class Pose2EquipTrainer(LightningModule):
             right_wrist_idx=args.pose2equip.right_wrist_idx,
             target_skeleton_connections_idx=TARGET_SKELETON_CONNECTIONS_INDEX,
         )
-        self.lr = float(args.loss.lr)
-        self.weight_decay = float(getattr(args.pose2equip, "weight_decay", 1e-4))
+        self.lr = float(getattr(args.loss, "lr", 0.1))
+        self.weight_decay = float(getattr(args.loss, "weight_decay", 0.01))
+
         self.loss_w_attach = float(getattr(args.pose2equip, "loss_w_attach", 0.1))
         self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
         self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))

@@ -447,12 +447,24 @@ class UnityDataModule(LightningDataModule):
         dataset_builder = (
             whole_video_dataset_single if self._is_single_view else whole_video_dataset_dual
         )
+        if self._is_single_view:
+            effective_load_frames = self._load_frames
+            effective_load_2d_kpt = self._load_2d_kpt
+            effective_load_3d_kpt = self._load_3d_kpt
+            effective_load_mask = self._load_mask
+        else:
+            # Dual-view policy: only load frames and 3D keypoints.
+            effective_load_frames = True
+            effective_load_2d_kpt = False
+            effective_load_3d_kpt = True
+            effective_load_mask = False
+
         dataset_kwargs = dict(
             transform=self.mapping_transform,
-            load_frames=self._load_frames,
-            load_2d_kpt=self._load_2d_kpt,
-            load_3d_kpt=self._load_3d_kpt,
-            load_mask=self._load_mask,
+            load_frames=effective_load_frames,
+            load_2d_kpt=effective_load_2d_kpt,
+            load_3d_kpt=effective_load_3d_kpt,
+            load_mask=effective_load_mask,
         )
 
         # train dataset

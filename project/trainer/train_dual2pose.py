@@ -22,11 +22,11 @@ class Dual2PoseTrainer(LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.lr = float(getattr(hparams.loss, "lr", 1e-4))
-        self.weight_decay = float(getattr(hparams.loss, "weight_decay", 1e-4))
+        self.lr = float(getattr(hparams.loss, "lr", 0.1))
+        self.weight_decay = float(getattr(hparams.loss, "weight_decay", 0.01))
         self.lambda_view_recon = float(getattr(hparams.loss, "lambda_view_recon", 0.05))
 
-        model_cfg = getattr(hparams, "model", None)
+        model_cfg = getattr(hparams, "dual2pose", None)
         d_model = int(getattr(model_cfg, "d_model", 256))
         n_layers = int(getattr(model_cfg, "n_layers", 4))
         # Default to confidence-free reliability modeling.

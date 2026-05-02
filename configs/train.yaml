@@ -8,6 +8,7 @@ hydra:
 
 loss:
   lr: 0.1
+  weight_decay: 0.01
 
 cross_validation:
   # 生成 index mapping 的配置（用于 cross_validation/generate_cv_index.py）
@@ -56,7 +57,6 @@ data:
 model:
   backbone: pose2equip # dual2pose, pose2equip
 
-  fusion_layers: 5 # the fuse layer number of the model, used for cross attention, se attention, etc.
   ablation_study: single # choices=[single, multi], help='the ablation study of the model, single means only one layer is used for fusion, multi means multiple layers are used for fusion'
 
 train:
@@ -72,7 +72,6 @@ train:
 pose2equip:
   num_joints: 15
 
-  weight_decay: 0.01
   loss_w_attach: 0.1
   loss_w_len: 0.02
   loss_w_sym: 0.03
@@ -88,6 +87,27 @@ pose2equip:
   # GT点索引，应该和unity记录的GT点顺序一致，或者至少保证能正确选取对应的点进行训练
   ski_gt_idx: [1, 2, 4, 5] # ski_l_front, ski_l_back, ski_r_front, ski_r_back
   pole_gt_idx: [0, 1, 2, 3] # pole_l_handle, pole_l_tip, pole_r_handle, pole_r_tip
+
+dual2pose:
+  num_joints: 15
+  weight_decay: 0.01
+
+  d_model: 256
+  n_layers: 4
+  use_conf: false
+  predict_logvar: false
+  use_dino_features: false
+  dino_model_name: facebook/dinov3-convnext-tiny-pretrain-lvd1689m
+  dino_freeze: true
+  dino_image_size: 224
+  dino_feature_dim: 768
+
+  lambda_mpjpe: 1.0
+  lambda_bone: 0.1
+  lambda_vel: 0.05
+  lambda_acc: 0.02
+  lambda_agree: 0.1
+  lambda_bone_stab: 0.05
 
 experiment: ${model.backbone} # the experiment name, used for log path
 log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}
