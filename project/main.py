@@ -109,7 +109,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     if hparams.train.view == "dual":
         if hparams.model.backbone == "dual2pose":
             classification_module = Dual2PoseTrainer(hparams)
-            monitor_metric = "val/loss"
+            monitor_metric = "val/character/loss"
             monitor_mode = "min"
             ckpt_filename = "{epoch}-{val/loss:.4f}"
         else:
