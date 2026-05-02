@@ -47,6 +47,7 @@ data:
 
   num_workers: 32
   img_size: 224
+  
   load_frames: true # whether to load video frames
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true

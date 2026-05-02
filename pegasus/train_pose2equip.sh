@@ -2,8 +2,8 @@
 #PBS -A SKIING
 #PBS -q gpu
 #PBS -l elapstim_req=24:00:00
-#PBS -N pole_ski_train
-#PBS -t 0-4
+#PBS -N pose2equip_train
+#PBS -t 0-2
 #PBS -o logs/pegasus/train_${PBS_SUBREQNO}.log
 #PBS -e logs/pegasus/train_${PBS_SUBREQNO}_err.log
 
@@ -25,7 +25,6 @@ INDEX_MAPPING_DIR="${DATA_ROOT}/index_mapping"
 INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/use_layer_camera_filter_enabled/camera_pairs_by_action_folds"
 
 MODEL_BACKBONE="pose2equip"
-FUSE_METHOD="mamba_ssm"
 
 NUM_WORKERS=32
 BATCH_SIZE=4
@@ -40,7 +39,7 @@ echo "Project Root: ${PROJECT_ROOT}"
 echo "Data Root: ${DATA_ROOT}"
 echo "Index Mapping: ${INDEX_MAPPING_PATH}"
 echo "GPU: 0, Epochs: ${MAX_EPOCHS}, Workers: ${NUM_WORKERS}"
-echo "Backbone: ${MODEL_BACKBONE}, Fuse: ${FUSE_METHOD}"
+echo "Backbone: ${MODEL_BACKBONE}"
 echo "Fold: ${FOLD_ID}"
 
 # === 3. 执行训练（每个作业只跑一个 fold） ===
@@ -52,6 +51,7 @@ python -m project.main \
     data.num_workers=${NUM_WORKERS} \
     data.batch_size=${BATCH_SIZE} \
     model.backbone=${MODEL_BACKBONE} \
-    train.fold=${FOLD_ID}
+    train.fold=${FOLD_ID}\
+    train.view="single"
 
 echo "🏁 Train job finished at: $(date)"
