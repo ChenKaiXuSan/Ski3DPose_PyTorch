@@ -26,8 +26,8 @@ INDEX_MAPPING_PATH="${INDEX_MAPPING_DIR}/use_layer_camera_filter_enabled/camera_
 
 MODEL_BACKBONE="dual2pose"
 
-NUM_WORKERS=30
-BATCH_SIZE=3
+NUM_WORKERS=24
+BATCH_SIZE=4
 
 # fold assignment:
 # - PBS array mode: use PBS_ARRAY_INDEX
