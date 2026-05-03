@@ -22,11 +22,30 @@ class Dual2PoseTrainer(LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.lr = float(getattr(hparams.loss, "lr", 0.1))
-        self.weight_decay = float(getattr(hparams.loss, "weight_decay", 0.01))
-        self.lambda_view_recon = float(getattr(hparams.loss, "lambda_view_recon", 0.05))
-
         model_cfg = getattr(hparams, "dual2pose", None)
+        self.lr = float(getattr(hparams.loss, "lr", 0.1))
+        self.weight_decay = float(
+            getattr(model_cfg, "weight_decay", getattr(hparams.loss, "weight_decay", 0.01))
+        )
+        self.lambda_view_recon = float(
+            getattr(model_cfg, "lambda_view_recon", getattr(hparams.loss, "lambda_view_recon", 0.05))
+        )
+        self.lambda_alpha_balance = float(getattr(model_cfg, "lambda_alpha_balance", 0.02))
+        self.lambda_alpha_entropy = float(getattr(model_cfg, "lambda_alpha_entropy", 0.005))
+        self.lambda_p0_supervise = float(getattr(model_cfg, "lambda_p0_supervise", 0.2))
+        self.rigid_align_right_to_left = bool(
+            getattr(model_cfg, "rigid_align_right_to_left", False)
+        )
+        self.console_print_train_metrics = bool(
+            getattr(model_cfg, "console_print_train_metrics", True)
+        )
+        self.console_print_every_n_steps = int(
+            getattr(model_cfg, "console_print_every_n_steps", 20)
+        )
+        self.console_print_include_val = bool(
+            getattr(model_cfg, "console_print_include_val", False)
+        )
+
         d_model = int(getattr(model_cfg, "d_model", 256))
         n_layers = int(getattr(model_cfg, "n_layers", 4))
         # Default to confidence-free reliability modeling.
@@ -84,11 +103,100 @@ class Dual2PoseTrainer(LightningModule):
         self.test_save_dir: Path = Path(self.save_root) / "pose_analysis"
 
         logger.info(
-            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s, use_dino_features=%s",
+            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s, use_dino_features=%s, "
+            "lambda_view_recon=%.4f, lambda_alpha_balance=%.4f, lambda_alpha_entropy=%.4f, lambda_p0_supervise=%.4f, "
+            "rigid_align_right_to_left=%s",
             use_conf,
             predict_logvar,
             self.use_dino_features,
+            self.lambda_view_recon,
+            self.lambda_alpha_balance,
+            self.lambda_alpha_entropy,
+            self.lambda_p0_supervise,
+            self.rigid_align_right_to_left,
         )
+
+    @staticmethod
+    def _rigid_align_right_pose_to_left_batch(
+        left: torch.Tensor,
+        right: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """Align right pose to left pose for each sample in a batch using Kabsch.
+
+        Args:
+            left: (B,T,J,3)
+            right: (B,T,J,3)
+        Returns:
+            (right_aligned, stats)
+        """
+        if left.shape != right.shape:
+            raise ValueError(
+                f"Rigid alignment expects same shape, got {tuple(left.shape)} vs {tuple(right.shape)}"
+            )
+        if left.ndim != 4 or left.shape[-1] != 3:
+            raise ValueError(
+                f"Rigid alignment expects (B,T,J,3), got {tuple(left.shape)}"
+            )
+
+        bsz = int(left.shape[0])
+        aligned = right.clone()
+        rmse_before_vals: List[float] = []
+        rmse_after_vals: List[float] = []
+        valid_points_vals: List[float] = []
+        applied = 0
+
+        for b in range(bsz):
+            x_full = right[b].reshape(-1, 3)
+            y_full = left[b].reshape(-1, 3)
+            valid = torch.isfinite(x_full).all(dim=-1) & torch.isfinite(y_full).all(dim=-1)
+            n_valid = int(valid.sum().item())
+            valid_points_vals.append(float(n_valid))
+            if n_valid < 3:
+                continue
+
+            x = x_full[valid]
+            y = y_full[valid]
+            x_mean = x.mean(dim=0)
+            y_mean = y.mean(dim=0)
+            x0 = x - x_mean
+            y0 = y - y_mean
+
+            h = x0.transpose(0, 1) @ y0
+            u, _, vh = torch.linalg.svd(h)
+            r = vh.transpose(0, 1) @ u.transpose(0, 1)
+
+            # Enforce proper rotation (det(R)=+1) to avoid reflection.
+            if torch.det(r) < 0:
+                vh = vh.clone()
+                vh[-1, :] *= -1
+                r = vh.transpose(0, 1) @ u.transpose(0, 1)
+
+            t = y_mean - x_mean @ r.transpose(0, 1)
+
+            aligned_b = right[b].reshape(-1, 3) @ r.transpose(0, 1) + t
+            aligned[b] = aligned_b.reshape_as(right[b])
+
+            diff_before = x_full[valid] - y_full[valid]
+            diff_after = aligned[b].reshape(-1, 3)[valid] - y_full[valid]
+            rmse_before_vals.append(
+                float(torch.sqrt((diff_before.pow(2).sum(dim=-1)).mean()).item())
+            )
+            rmse_after_vals.append(
+                float(torch.sqrt((diff_after.pow(2).sum(dim=-1)).mean()).item())
+            )
+            applied += 1
+
+        def _safe_mean(vals: List[float]) -> float:
+            return float(sum(vals) / len(vals)) if vals else float("nan")
+
+        return aligned, {
+            "enabled": 1.0,
+            "applied": float(applied),
+            "applied_ratio": float(applied / max(1, bsz)),
+            "valid_points": _safe_mean(valid_points_vals),
+            "rmse_before": _safe_mean(rmse_before_vals),
+            "rmse_after": _safe_mean(rmse_after_vals),
+        }
 
     @staticmethod
     def _temporal_velocity_norm(x: torch.Tensor) -> torch.Tensor:
@@ -105,6 +213,66 @@ class Dual2PoseTrainer(LightningModule):
             return x.new_tensor(0.0)
         acc = x[:, 2:] - 2.0 * x[:, 1:-1] + x[:, :-2]
         return torch.norm(acc, dim=-1).mean()
+
+    def _is_global_zero(self) -> bool:
+        rank = int(getattr(self, "global_rank", 0))
+        return rank == 0
+
+    def _to_float(self, value: Any) -> float:
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 0:
+                return float("nan")
+            return float(value.detach().float().mean().item())
+        if isinstance(value, (int, float)):
+            return float(value)
+        return float("nan")
+
+    def _maybe_print_metrics_to_console(
+        self,
+        stage: str,
+        metrics: Dict[str, Any],
+    ) -> None:
+        if not self._is_global_zero():
+            return
+
+        if stage == "train":
+            if not self.console_print_train_metrics:
+                return
+            every = max(1, self.console_print_every_n_steps)
+            step = int(getattr(self, "global_step", 0))
+            if step % every != 0:
+                return
+        elif stage == "val":
+            if not self.console_print_include_val:
+                return
+        else:
+            return
+
+        epoch = int(getattr(self, "current_epoch", 0))
+        step = int(getattr(self, "global_step", 0))
+
+        parts = [f"[{stage}] epoch={epoch} step={step}"]
+        ordered_keys = [
+            "loss",
+            "mpjpe",
+            "alpha_mean",
+            "cross_view_gap",
+            "recon_view",
+            "vel_norm",
+            "acc_norm",
+            "p0_drift",
+            "rigid_applied_ratio",
+            "rigid_rmse_before",
+            "rigid_rmse_after",
+            "dino_feat_gap",
+        ]
+        for key in ordered_keys:
+            if key in metrics:
+                value = self._to_float(metrics[key])
+                if value == value:
+                    parts.append(f"{key}={value:.6f}")
+
+        print(" | ".join(parts), flush=True)
 
     @staticmethod
     def _get_character_data(batch: Dict[str, Any]) -> Tuple[
@@ -175,6 +343,19 @@ class Dual2PoseTrainer(LightningModule):
             p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(
                 batch
             )
+            rigid_stats: Dict[str, float] = {
+                "enabled": 1.0 if self.rigid_align_right_to_left else 0.0,
+                "applied": 0.0,
+                "applied_ratio": 0.0,
+                "valid_points": 0.0,
+                "rmse_before": float("nan"),
+                "rmse_after": float("nan"),
+            }
+            if self.rigid_align_right_to_left:
+                p_right, rigid_stats = self._rigid_align_right_pose_to_left_batch(
+                    left=p_left,
+                    right=p_right,
+                )
 
             model = self.models["character"]
             loss_fn = self.loss_fns["character"]
@@ -222,6 +403,7 @@ class Dual2PoseTrainer(LightningModule):
             if p_gt is not None:
                 loss_dict = loss_fn(p_hat=p_hat, p_gt=p_gt, logvar=logvar)
                 mpjpe = torch.norm(p_hat - p_gt, dim=-1).mean()
+                loss_p0_supervise = torch.nn.functional.l1_loss(p0, p_gt)
                 self.log(
                     f"{stage}/character/mpjpe",
                     mpjpe,
@@ -237,8 +419,26 @@ class Dual2PoseTrainer(LightningModule):
                     p_right=p_right,
                     alpha=alpha,
                 )
+                loss_p0_supervise = p_hat.new_tensor(0.0)
 
-            loss = loss_dict["loss"] + self.lambda_view_recon * loss_view_recon
+            # Prevent gating collapse to one side.
+            eps = 1e-6
+            alpha_mean = alpha.mean()
+            loss_alpha_balance = (alpha_mean - 0.5).abs()
+            alpha_entropy = -(
+                alpha * torch.log(alpha.clamp(min=eps))
+                + (1.0 - alpha) * torch.log((1.0 - alpha).clamp(min=eps))
+            ).mean()
+            # Minimize negative entropy == maximize entropy.
+            loss_alpha_entropy = -alpha_entropy
+
+            loss = (
+                loss_dict["loss"]
+                + self.lambda_view_recon * loss_view_recon
+                + self.lambda_alpha_balance * loss_alpha_balance
+                + self.lambda_alpha_entropy * loss_alpha_entropy
+                + self.lambda_p0_supervise * loss_p0_supervise
+            )
             total_loss = total_loss + loss
 
             # Log loss components
@@ -282,6 +482,32 @@ class Dual2PoseTrainer(LightningModule):
                 on_epoch=True,
                 batch_size=p_hat.shape[0],
             )
+            if self.rigid_align_right_to_left:
+                rmse_before = rigid_stats["rmse_before"]
+                rmse_after = rigid_stats["rmse_after"]
+                if rmse_before == rmse_before:
+                    self.log(
+                        f"{stage}/character/rigid_rmse_before",
+                        p_hat.new_tensor(rmse_before),
+                        on_step=True,
+                        on_epoch=True,
+                        batch_size=p_hat.shape[0],
+                    )
+                if rmse_after == rmse_after:
+                    self.log(
+                        f"{stage}/character/rigid_rmse_after",
+                        p_hat.new_tensor(rmse_after),
+                        on_step=True,
+                        on_epoch=True,
+                        batch_size=p_hat.shape[0],
+                    )
+                self.log(
+                    f"{stage}/character/rigid_applied_ratio",
+                    p_hat.new_tensor(rigid_stats["applied_ratio"]),
+                    on_step=True,
+                    on_epoch=True,
+                    batch_size=p_hat.shape[0],
+                )
             self.log(
                 f"{stage}/character/vel_norm",
                 vel_norm,
@@ -318,6 +544,27 @@ class Dual2PoseTrainer(LightningModule):
                 batch_size=p_hat.shape[0],
             )
             self.log(
+                f"{stage}/character/loss_alpha_balance",
+                loss_alpha_balance,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/alpha_entropy",
+                alpha_entropy,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
+                f"{stage}/character/loss_p0_supervise",
+                loss_p0_supervise,
+                on_step=True,
+                on_epoch=True,
+                batch_size=p_hat.shape[0],
+            )
+            self.log(
                 f"{stage}/character/p0_drift",
                 torch.nn.functional.l1_loss(p_hat, p0),
                 on_step=True,
@@ -336,6 +583,40 @@ class Dual2PoseTrainer(LightningModule):
                     on_epoch=True,
                     batch_size=p_hat.shape[0],
                 )
+
+            console_metrics: Dict[str, Any] = {
+                "loss": loss,
+                "alpha_mean": alpha.mean(),
+                "cross_view_gap": cv_gap,
+                "recon_view": loss_view_recon,
+                "vel_norm": vel_norm,
+                "acc_norm": acc_norm,
+                "p0_drift": torch.nn.functional.l1_loss(p_hat, p0),
+            }
+            if p_gt is not None:
+                console_metrics["mpjpe"] = mpjpe
+            if self.rigid_align_right_to_left:
+                console_metrics["rigid_applied_ratio"] = p_hat.new_tensor(
+                    rigid_stats["applied_ratio"]
+                )
+                if rigid_stats["rmse_before"] == rigid_stats["rmse_before"]:
+                    console_metrics["rigid_rmse_before"] = p_hat.new_tensor(
+                        rigid_stats["rmse_before"]
+                    )
+                if rigid_stats["rmse_after"] == rigid_stats["rmse_after"]:
+                    console_metrics["rigid_rmse_after"] = p_hat.new_tensor(
+                        rigid_stats["rmse_after"]
+                    )
+            if (
+                self.use_dino_features
+                and img_feat_left is not None
+                and img_feat_right is not None
+            ):
+                console_metrics["dino_feat_gap"] = torch.norm(
+                    img_feat_left - img_feat_right, dim=-1
+                ).mean()
+
+            self._maybe_print_metrics_to_console(stage=stage, metrics=console_metrics)
 
             # Store results
             variant_results["character"] = {

@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from project.dataloader.whole_video_dataset_single_view import LabeledUnityDataset
 from project.map_config import (
     ID_TO_INDEX,
     SKELETON_CONNECTIONS,
@@ -63,11 +62,29 @@ def _load_record(npz_path: Path) -> Dict[str, Any]:
     return rec
 
 
-def _to_target_joints(kpt: np.ndarray) -> np.ndarray:
+def _to_model_joint_count(kpt: np.ndarray, expected_joints: int) -> np.ndarray:
     if kpt.ndim != 2 or kpt.shape[1] not in (2, 3):
         raise ValueError(f"Expected keypoint shape [J,2/3], got {kpt.shape}")
-    src_idx = LabeledUnityDataset._select_source_joint_indices(kpt.shape[0])
-    return kpt[src_idx]
+    if kpt.shape[0] == expected_joints:
+        return kpt.astype(np.float32)
+
+    # Keep mapping policy aligned with unity-frame visualization for consistency.
+    src_idx: List[int] = []
+    for jid in [jid for jid, _ in sorted(ID_TO_INDEX.items(), key=lambda kv: kv[1])]:
+        candidates = (jid, ID_TO_INDEX[jid])
+        mapped = next((c for c in candidates if 0 <= c < kpt.shape[0]), None)
+        if mapped is None:
+            raise IndexError(
+                f"Target joint id {jid} cannot be mapped for source joint count {kpt.shape[0]}."
+            )
+        src_idx.append(int(mapped))
+
+    filtered = kpt[src_idx]
+    if filtered.shape[0] != expected_joints:
+        raise ValueError(
+            f"Joint count mismatch after filtering: expected {expected_joints}, got {filtered.shape[0]}"
+        )
+    return filtered.astype(np.float32)
 
 
 def _build_edges() -> List[Tuple[int, int]]:
@@ -88,7 +105,7 @@ def _build_labels() -> List[str]:
 def _extract_float_token(token: str) -> Optional[float]:
     try:
         return float(token)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
@@ -150,6 +167,9 @@ def _frame_to_model_tensor(
     x = F.interpolate(
         x, size=(image_size, image_size), mode="bilinear", align_corners=False
     )
+    mean = x.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = x.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    x = (x - mean) / std
     return x.to(device)
 
 
@@ -323,7 +343,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-01/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-02/fold_0/checkpoints/fold_0"
         ),
         help="Pose2Equip checkpoint directory (or its parent).",
     )
@@ -358,7 +378,7 @@ def main() -> None:
     image_size = int(cfg.data.img_size)
     ckpt_path = _select_best_ckpt(args.ckpt_dir)
     model = _load_pose2equip_from_ckpt(ckpt_path, cfg, device)
-    expected_joints = int(model.pose_encoder.net[0].in_features // 3)
+    expected_joints = int(getattr(model.pose_encoder, "num_joints", len(ID_TO_INDEX)))
 
     print(f"[INFO] Best ckpt: {ckpt_path}")
 
@@ -411,8 +431,8 @@ def main() -> None:
         else:
             kpt2d = kpt3d[:, :2].astype(np.float32)
 
-        kpt2d_t = _to_target_joints(kpt2d)
-        kpt3d_t = _to_target_joints(kpt3d)
+        kpt2d_t = _to_model_joint_count(kpt2d, expected_joints)
+        kpt3d_t = _to_model_joint_count(kpt3d, expected_joints)
 
         if kpt3d_t.shape[0] != expected_joints:
             raise ValueError(

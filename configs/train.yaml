@@ -45,15 +45,15 @@ data:
   index_mapping_path: ${data.index_mapping}/use_layer_camera_filter_enabled/camera_pairs_by_action_folds # precomputed index mapping json file path
   sam3d_export_path: ${data.unity.root_path}/sam3d_body_results/modalities_from_sam3d # exported kpt2d/kpt3d from SAM3D
 
-  num_workers: 32
   img_size: 224
-  
+
   load_frames: true # whether to load video frames
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
   load_mask: true
 
-  batch_size: 4
+  num_workers: 16
+  batch_size: 8
 
 model:
   backbone: pose2equip # dual2pose, pose2equip
@@ -93,15 +93,26 @@ dual2pose:
   num_joints: 15
   weight_decay: 0.01
 
+  # Pre-align right-view 3D pose to left-view coordinates before fusion.
+  rigid_align_right_to_left: true
+  rigid_align_ref_variant: character
+
   d_model: 256
   n_layers: 4
-  use_conf: false
+  use_conf: true
   predict_logvar: false
+  
+  # frame branch
   use_dino_features: false
   dino_model_name: facebook/dinov3-convnext-tiny-pretrain-lvd1689m
   dino_freeze: true
   dino_image_size: 224
   dino_feature_dim: 768
+
+  lambda_view_recon: 0.05
+  lambda_alpha_balance: 0.02
+  lambda_alpha_entropy: 0.005
+  lambda_p0_supervise: 0.2
 
   lambda_mpjpe: 1.0
   lambda_bone: 0.1
