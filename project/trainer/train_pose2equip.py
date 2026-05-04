@@ -10,7 +10,7 @@ from pytorch_lightning import (
 from scipy.spatial.transform import Rotation
 
 from project.models.pose2equip_net import Pose2EquipNet
-from project.map_config import TARGET_SKELETON_CONNECTIONS_INDEX
+from project.map_config import FILTER_SKELETON_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,7 @@ class Pose2EquipTrainer(LightningModule):
             right_ankle_idx=args.pose2equip.right_ankle_idx,
             left_wrist_idx=args.pose2equip.left_wrist_idx,
             right_wrist_idx=args.pose2equip.right_wrist_idx,
-            target_skeleton_connections_idx=TARGET_SKELETON_CONNECTIONS_INDEX,
+            target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
         )
         self.lr = float(getattr(args.loss, "lr", 0.1))
         self.weight_decay = float(getattr(args.loss, "weight_decay", 0.01))

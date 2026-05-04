@@ -22,9 +22,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from project.map_config import (
     ID_TO_INDEX,
-    SKELETON_CONNECTIONS,
+    SAM3D_BODY_SKELETON_CONNECTIONS,
     TARGET_IDS,
-    UNITY_MHR70_MAPPING,
+    SAM3D_BODY_MAPPING,
 )
 from project.models.dual2pose_net import Dual2PoseNet
 
@@ -128,31 +128,82 @@ def _frame_to_video_tensor(frame_rgb: np.ndarray, device: torch.device) -> torch
     return x.to(device)
 
 
-def _to_model_joint_count(kpt: np.ndarray, expected_joints: int) -> np.ndarray:
+def _to_model_joint_count(
+    kpt: np.ndarray,
+    expected_joints: int,
+    source_indices: Optional[List[int]] = None,
+) -> np.ndarray:
     if kpt.ndim != 2 or kpt.shape[1] not in (2, 3):
         raise ValueError(f"Expected keypoint shape [J,2/3], got {kpt.shape}")
 
-    src_idx: List[int] = []
-    for jid in [jid for jid, _ in sorted(ID_TO_INDEX.items(), key=lambda kv: kv[1])]:
-        candidates = (jid, ID_TO_INDEX[jid])
-        mapped = next((c for c in candidates if 0 <= c < kpt.shape[0]), None)
-        if mapped is None:
-            raise IndexError(
-                f"Target joint id {jid} cannot be mapped for source joint count {kpt.shape[0]}."
+    if source_indices is not None:
+        if len(source_indices) != int(expected_joints):
+            raise ValueError(
+                f"source_indices len mismatch: expected {expected_joints}, got {len(source_indices)}"
             )
-        src_idx.append(int(mapped))
+        if max(source_indices) >= int(kpt.shape[0]):
+            raise ValueError(
+                "source_indices out of bounds for source keypoints: "
+                f"max_index={max(source_indices)}, source_joints={kpt.shape[0]}"
+            )
+        return kpt[source_indices].astype(np.float32)
 
-    filtered = kpt[src_idx]
-    if filtered.shape[0] != expected_joints:
-        raise ValueError(
-            f"Joint count mismatch after filtering: expected {expected_joints}, got {filtered.shape[0]}"
-        )
-    return filtered.astype(np.float32)
+    # Case 1: already in target compact layout [15,2/3].
+    if int(kpt.shape[0]) == int(expected_joints):
+        return kpt.astype(np.float32)
+
+    # Case 2: source is full Unity-MHR70-like layout, use target joint IDs as indices.
+    max_target_id = max(TARGET_IDS)
+    if int(kpt.shape[0]) > int(max_target_id):
+        return kpt[TARGET_IDS].astype(np.float32)
+
+    raise ValueError(
+        "Unsupported keypoint layout for remapping: "
+        f"source_joints={kpt.shape[0]}, expected_joints={expected_joints}, "
+        f"required_source_joints>{max_target_id} for id-based remap"
+    )
+
+
+def _load_target_source_indices_by_joint_names(
+    joint_names_path: Optional[str],
+) -> Optional[List[int]]:
+    if not joint_names_path:
+        return None
+
+    path = Path(str(joint_names_path))
+    if not path.exists():
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    names_obj = data.get("joint_names") if isinstance(data, dict) else None
+    if not isinstance(names_obj, list) or len(names_obj) == 0:
+        return None
+
+    names: List[str] = [str(x) for x in names_obj]
+    exact = {name: idx for idx, name in enumerate(names)}
+    lower = {name.lower(): idx for idx, name in enumerate(names)}
+
+    src_idx: List[int] = []
+    for jid in TARGET_IDS:
+        target_name = str(SAM3D_BODY_MAPPING.get(jid, ""))
+        idx = exact.get(target_name)
+        if idx is None:
+            idx = lower.get(target_name.lower())
+        if idx is None:
+            return None
+        src_idx.append(int(idx))
+
+    return src_idx
 
 
 def _build_edges() -> List[Tuple[int, int]]:
     edges: List[Tuple[int, int]] = []
-    for a, b in SKELETON_CONNECTIONS:
+    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
         if a in ID_TO_INDEX and b in ID_TO_INDEX:
             edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
     return edges
@@ -161,7 +212,7 @@ def _build_edges() -> List[Tuple[int, int]]:
 def _build_labels() -> List[str]:
     labels: List[str] = []
     for i, jid in enumerate(TARGET_IDS):
-        labels.append(f"{i}:{UNITY_MHR70_MAPPING.get(jid, str(jid))}")
+        labels.append(f"{i}:{SAM3D_BODY_MAPPING.get(jid, str(jid))}")
     return labels
 
 
@@ -285,6 +336,31 @@ def _draw_3d(ax, xyz: np.ndarray, edges: List[Tuple[int, int]], title: str, colo
     ax.set_zlabel("Z")
 
 
+def _draw_frame_with_gt_2d(
+    ax,
+    frame: np.ndarray,
+    gt_2d: Optional[np.ndarray],
+    edges: List[Tuple[int, int]],
+    title: str,
+) -> None:
+    ax.imshow(frame)
+    ax.set_title(title)
+    ax.axis("off")
+
+    if gt_2d is None or gt_2d.ndim != 2 or gt_2d.shape[0] == 0:
+        return
+
+    ax.scatter(gt_2d[:, 0], gt_2d[:, 1], s=14, c="yellow", alpha=0.95)
+    draw_edges = _filter_edges_by_length(gt_2d, edges, max_ratio=3.0)
+    for i, j in draw_edges:
+        ax.plot(
+            [gt_2d[i, 0], gt_2d[j, 0]],
+            [gt_2d[i, 1], gt_2d[j, 1]],
+            color="cyan",
+            linewidth=1.4,
+        )
+
+
 def _draw_3d_compare(
     ax,
     left_3d: np.ndarray,
@@ -342,6 +418,57 @@ def _build_alpha_diagnostics(
     }
 
 
+def _rigid_align_right_to_left_single(
+    left: np.ndarray,
+    right: np.ndarray,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Align one right-view pose to left-view pose using Kabsch rigid transform."""
+    if left.shape != right.shape:
+        raise ValueError(f"Shape mismatch: left={left.shape}, right={right.shape}")
+    if left.ndim != 2 or left.shape[1] != 3:
+        raise ValueError(f"Expected [J,3], got {left.shape}")
+
+    valid = np.isfinite(left).all(axis=1) & np.isfinite(right).all(axis=1)
+    n_valid = int(valid.sum())
+    if n_valid < 3:
+        return right.copy(), {
+            "applied": 0.0,
+            "valid_points": float(n_valid),
+            "rmse_before": float("nan"),
+            "rmse_after": float("nan"),
+        }
+
+    x = right[valid]
+    y = left[valid]
+    x_mean = x.mean(axis=0)
+    y_mean = y.mean(axis=0)
+    x0 = x - x_mean
+    y0 = y - y_mean
+
+    h = x0.T @ y0
+    u, _, vh = np.linalg.svd(h, full_matrices=False)
+    r = vh.T @ u.T
+    if np.linalg.det(r) < 0:
+        vh = vh.copy()
+        vh[-1, :] *= -1.0
+        r = vh.T @ u.T
+
+    t = y_mean - x_mean @ r.T
+    right_aligned = right @ r.T + t
+
+    diff_before = right[valid] - left[valid]
+    diff_after = right_aligned[valid] - left[valid]
+    rmse_before = float(np.sqrt(np.sum(diff_before * diff_before, axis=1).mean()))
+    rmse_after = float(np.sqrt(np.sum(diff_after * diff_after, axis=1).mean()))
+
+    return right_aligned.astype(np.float32), {
+        "applied": 1.0,
+        "valid_points": float(n_valid),
+        "rmse_before": rmse_before,
+        "rmse_after": rmse_after,
+    }
+
+
 def _load_fold_items(cfg: Any, fold: int, split: str) -> List[Dict[str, Any]]:
     fold_dir = Path(str(cfg.data.index_mapping_path))
     fold_file = fold_dir / f"fold_{fold:02d}.json"
@@ -366,7 +493,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/dual2pose/2026-05-02/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/dual2pose/2026-05-03/fold_0/checkpoints/fold_0"
         ),
         help="Checkpoint directory containing *.ckpt",
     )
@@ -393,6 +520,11 @@ def main() -> None:
     parser.add_argument("--frame-stride", type=int, default=5, help="Frame stride within one sample")
     parser.add_argument("--device", type=str, default="cuda", help="Inference device")
     parser.add_argument(
+        "--rigid-align-right-to-left",
+        action="store_true",
+        help="Apply rigid alignment to right-view pose before fusion",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=Path(
@@ -415,8 +547,14 @@ def main() -> None:
 
     cfg = OmegaConf.load(str(args.config))
 
+    rigid_align_right_to_left = bool(
+        args.rigid_align_right_to_left
+        or bool(getattr(cfg.dual2pose, "rigid_align_right_to_left", False))
+    )
+
     ckpt_path = _select_best_ckpt(args.ckpt_dir)
     print(f"[INFO] Best ckpt: {ckpt_path}")
+    print(f"[INFO] rigid_align_right_to_left={rigid_align_right_to_left}")
 
     model = _load_dual2pose_from_ckpt(ckpt_path, cfg, device)
     expected_joints = int(getattr(model, "num_joints", len(ID_TO_INDEX)))
@@ -477,6 +615,33 @@ def main() -> None:
                 Path(str(kpt3d_dirs["character"])), ["frame_*.npy", "*.npy"]
             )
 
+        gt_source_indices = _load_target_source_indices_by_joint_names(
+            sample_dict.get("joint_names_path")
+        )
+
+        gt_cam1_2d_map: Dict[int, Path] = {}
+        gt_cam2_2d_map: Dict[int, Path] = {}
+
+        cam1_kpt2d_dirs = sample_dict.get("cam1_kpt2d_dirs")
+        cam2_kpt2d_dirs = sample_dict.get("cam2_kpt2d_dirs")
+        if isinstance(cam1_kpt2d_dirs, dict) and "character" in cam1_kpt2d_dirs:
+            gt_cam1_2d_map = _build_idx_file_map(
+                Path(str(cam1_kpt2d_dirs["character"])), ["kpt2d_*.npy", "*.npy"]
+            )
+        elif "cam1_kpt2d_dir" in sample_dict:
+            gt_cam1_2d_map = _build_idx_file_map(
+                Path(str(sample_dict["cam1_kpt2d_dir"])), ["kpt2d_*.npy", "*.npy"]
+            )
+
+        if isinstance(cam2_kpt2d_dirs, dict) and "character" in cam2_kpt2d_dirs:
+            gt_cam2_2d_map = _build_idx_file_map(
+                Path(str(cam2_kpt2d_dirs["character"])), ["kpt2d_*.npy", "*.npy"]
+            )
+        elif "cam2_kpt2d_dir" in sample_dict:
+            gt_cam2_2d_map = _build_idx_file_map(
+                Path(str(sample_dict["cam2_kpt2d_dir"])), ["kpt2d_*.npy", "*.npy"]
+            )
+
         sample_out = run_out / sample_tag
         vis_dir = sample_out / "vis"
         pred_dir = sample_out / "pred"
@@ -491,12 +656,43 @@ def main() -> None:
 
             left_3d = _to_model_joint_count(left_raw, expected_joints)
             right_3d = _to_model_joint_count(right_raw, expected_joints)
+            rigid_diag: Dict[str, float] = {
+                "applied": 0.0,
+                "valid_points": 0.0,
+                "rmse_before": float("nan"),
+                "rmse_after": float("nan"),
+            }
+            if rigid_align_right_to_left:
+                right_3d, rigid_diag = _rigid_align_right_to_left_single(
+                    left=left_3d,
+                    right=right_3d,
+                )
 
             gt_3d: Optional[np.ndarray] = None
+            gt_cam1_2d: Optional[np.ndarray] = None
+            gt_cam2_2d: Optional[np.ndarray] = None
             mpjpe_to_gt: Optional[float] = None
             if frame_idx in gt_character_map:
                 gt_raw = np.asarray(np.load(gt_character_map[frame_idx]), dtype=np.float32)
-                gt_3d = _to_model_joint_count(gt_raw, expected_joints)
+                gt_3d = _to_model_joint_count(
+                    gt_raw,
+                    expected_joints,
+                    source_indices=gt_source_indices,
+                )
+            if frame_idx in gt_cam1_2d_map:
+                gt_cam1_raw = np.asarray(np.load(gt_cam1_2d_map[frame_idx]), dtype=np.float32)
+                gt_cam1_2d = _to_model_joint_count(
+                    gt_cam1_raw,
+                    expected_joints,
+                    source_indices=gt_source_indices,
+                )
+            if frame_idx in gt_cam2_2d_map:
+                gt_cam2_raw = np.asarray(np.load(gt_cam2_2d_map[frame_idx]), dtype=np.float32)
+                gt_cam2_2d = _to_model_joint_count(
+                    gt_cam2_raw,
+                    expected_joints,
+                    source_indices=gt_source_indices,
+                )
 
             p_left_t = torch.from_numpy(left_3d).unsqueeze(0).unsqueeze(0).to(device)
             p_right_t = torch.from_numpy(right_3d).unsqueeze(0).unsqueeze(0).to(device)
@@ -525,7 +721,8 @@ def main() -> None:
                 f"sample={sample_idx} frame={frame_idx} "
                 f"alpha(min/mean/max/std)=({diag['alpha_min']:.4f}/{diag['alpha_mean']:.4f}/{diag['alpha_max']:.4f}/{diag['alpha_std']:.4f}) "
                 f"hat_to(L/R)=({diag['l2_hat_to_left']:.4f}/{diag['l2_hat_to_right']:.4f}) "
-                f"p0_to(L/R)=({diag['l2_p0_to_left']:.4f}/{diag['l2_p0_to_right']:.4f})"
+                f"p0_to(L/R)=({diag['l2_p0_to_left']:.4f}/{diag['l2_p0_to_right']:.4f}) "
+                f"rigid(applied/rmse_before/rmse_after)=({rigid_diag['applied']:.0f}/{rigid_diag['rmse_before']:.4f}/{rigid_diag['rmse_after']:.4f})"
             )
 
             if gt_3d is not None:
@@ -534,14 +731,22 @@ def main() -> None:
             fig = plt.figure(figsize=(30, 7))
 
             ax1 = fig.add_subplot(1, 5, 1)
-            ax1.imshow(frame1)
-            ax1.set_title("cam1 frame")
-            ax1.axis("off")
+            _draw_frame_with_gt_2d(
+                ax1,
+                frame1,
+                gt_cam1_2d,
+                edges,
+                "cam1 frame + GT 2D" if gt_cam1_2d is not None else "cam1 frame",
+            )
 
             ax2 = fig.add_subplot(1, 5, 2)
-            ax2.imshow(frame2)
-            ax2.set_title("cam2 frame")
-            ax2.axis("off")
+            _draw_frame_with_gt_2d(
+                ax2,
+                frame2,
+                gt_cam2_2d,
+                edges,
+                "cam2 frame + GT 2D" if gt_cam2_2d is not None else "cam2 frame",
+            )
 
             ax3 = fig.add_subplot(1, 5, 3, projection="3d")
             _draw_3d(ax3, left_3d, edges, "sam3d cam1", "tab:blue")
@@ -585,6 +790,7 @@ def main() -> None:
                 "p_hat": p_hat.tolist(),
                 "alpha": alpha.tolist(),
                 "diagnostics": diag,
+                "rigid_alignment": rigid_diag,
                 "gt_character": gt_3d.tolist() if gt_3d is not None else None,
                 "mpjpe_to_gt": mpjpe_to_gt,
             }

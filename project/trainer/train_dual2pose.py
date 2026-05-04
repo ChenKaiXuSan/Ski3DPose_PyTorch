@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 from pytorch_lightning import LightningModule
 
-from project.map_config import ID_TO_INDEX, TARGET_SKELETON_CONNECTIONS_INDEX
+from project.map_config import FILTER_SKELETON_CONNECTIONS
 from project.models.dual2pose_net import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ class Dual2PoseTrainer(LightningModule):
         self.dino_image_size = int(getattr(model_cfg, "dino_image_size", 224))
         self.dino_feature_dim = int(getattr(model_cfg, "dino_feature_dim", 768))
 
-        num_joints_character = len(ID_TO_INDEX)  # 15
+        num_joints_character = 15  # After filtering with FILTER_SKELETON_CONNECTIONS
 
         self.models = torch.nn.ModuleDict()
         self.models["character"] = Dual2PoseNet(
@@ -72,7 +72,7 @@ class Dual2PoseTrainer(LightningModule):
             n_layers=n_layers,
             use_conf=use_conf,
             predict_logvar=predict_logvar,
-            bone_edges=TARGET_SKELETON_CONNECTIONS_INDEX,
+            bone_edges=FILTER_SKELETON_CONNECTIONS,
             use_dino_features=self.use_dino_features,
             dino_model_name=self.dino_model_name,
             dino_freeze=self.dino_freeze,
@@ -94,7 +94,7 @@ class Dual2PoseTrainer(LightningModule):
         # Create loss function only for character (has skeleton)
         self.loss_fns = torch.nn.ModuleDict()
         self.loss_fns["character"] = PoseRefineLoss(
-            bone_edges=TARGET_SKELETON_CONNECTIONS_INDEX,
+            bone_edges=FILTER_SKELETON_CONNECTIONS,
             weights=weights,
         )
 

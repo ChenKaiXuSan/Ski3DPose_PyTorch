@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from project.dataloader.whole_video_dataset_dual_view import LabeledUnityDataset
-from project.map_config import ID_TO_INDEX, SKELETON_CONNECTIONS, TARGET_IDS, UNITY_MHR70_MAPPING
+from project.map_config import ID_TO_INDEX, SAM3D_BODY_SKELETON_CONNECTIONS, TARGET_IDS, SAM3D_BODY_MAPPING
 from project.trainer.train_dual2pose import Dual2PoseTrainer
 
 
@@ -149,7 +149,7 @@ def _filter_joints(kpts: np.ndarray, src_idx: List[int]) -> np.ndarray:
 
 def _build_edges() -> List[Tuple[int, int]]:
     edges: List[Tuple[int, int]] = []
-    for a, b in SKELETON_CONNECTIONS:
+    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
         if a in ID_TO_INDEX and b in ID_TO_INDEX:
             edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
     return edges
@@ -158,7 +158,7 @@ def _build_edges() -> List[Tuple[int, int]]:
 def _build_joint_labels() -> List[str]:
     labels: List[str] = []
     for idx, jid in enumerate(TARGET_IDS):
-        name = UNITY_MHR70_MAPPING.get(jid, f"jid_{jid}")
+        name = SAM3D_BODY_MAPPING.get(jid, f"jid_{jid}")
         labels.append(f"{idx}:{name}")
     return labels
 

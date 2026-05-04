@@ -24,9 +24,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from project.map_config import (
     ID_TO_INDEX,
-    SKELETON_CONNECTIONS,
+    SAM3D_BODY_SKELETON_CONNECTIONS,
     TARGET_IDS,
-    UNITY_MHR70_MAPPING,
+    SAM3D_BODY_MAPPING,
 )
 from project.models.pose2equip_net import Pose2EquipNet
 
@@ -48,7 +48,7 @@ EQUIP_SEGMENTS = [
     (6, 7),  # right pole
 ]
 
-TARGET_JOINT_NAMES = [UNITY_MHR70_MAPPING[jid] for jid in TARGET_IDS]
+TARGET_JOINT_NAMES = [SAM3D_BODY_MAPPING[jid] for jid in TARGET_IDS]
 
 
 def _extract_float_token(token: str) -> Optional[float]:
@@ -267,7 +267,7 @@ def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
     )
 
     edges: List[Tuple[int, int]] = []
-    for a, b in SKELETON_CONNECTIONS:
+    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
         if a in ID_TO_INDEX and b in ID_TO_INDEX:
             edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
 
@@ -755,7 +755,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip_unity_frame"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip/pose2equip_unity_frame"
         ),
         help="Output root directory",
     )

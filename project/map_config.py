@@ -20,12 +20,13 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
-from typing import Dict, Optional
 from dataclasses import asdict, dataclass, fields
+from typing import Dict, Optional
 
-# --- 設定 ---
-# * 这个文件定义了与 Unity MHR70 骨骼结构相关的映射和配置，供整个项目使用。
-UNITY_MHR70_MAPPING = {
+import numpy as np
+
+# * 这里定义了sam 3d body需要过滤的关节点序号和名字
+SAM3D_BODY_MAPPING = {
     1: "Bone_Eye_L",
     2: "Bone_Eye_R",
     5: "Upperarm_L",
@@ -42,7 +43,47 @@ UNITY_MHR70_MAPPING = {
     62: "Hand_L",
     69: "neck_01",
 }
-TARGET_IDS = list(UNITY_MHR70_MAPPING.keys())
+
+# * 这里定义了unity需要过滤的关节点序号和名字
+# * key 是 joint_names_character.json 中的0-based索引，value 与 SAM3D_BODY_MAPPING 保持一致
+UNITY_MAPPING = {
+    52: "Bone_Eye_L",
+    53: "Bone_Eye_R",
+    5: "Upperarm_L",
+    28: "Upperarm_R",
+    6: "lowerarm_l",
+    29: "lowerarm_r",
+    80: "Thigh_L",
+    89: "Thigh_R",
+    81: "calf_l",
+    90: "calf_r",
+    83: "Foot_L",
+    92: "Foot_R",
+    30: "Hand_R",
+    7: "Hand_L",
+    50: "neck_01",
+}
+
+# * 过滤后的index和关节点名字
+FILTERED_KPTS_MAPPING = {
+    0: "Bone_Eye_L",
+    1: "Bone_Eye_R",
+    2: "Upperarm_L",
+    3: "Upperarm_R",
+    4: "lowerarm_l",
+    5: "lowerarm_r",
+    6: "Thigh_L",
+    7: "Thigh_R",
+    8: "calf_l",
+    9: "calf_r",
+    10: "Foot_L",
+    11: "Foot_R",
+    12: "Hand_R",
+    13: "Hand_L",
+    14: "neck_01",
+}
+
+TARGET_IDS = list(SAM3D_BODY_MAPPING.keys())
 
 ID_TO_INDEX = {jid: idx for idx, jid in enumerate(TARGET_IDS)}
 
@@ -57,15 +98,10 @@ ANGLE_DEFS = {
     "hip_r": (69, 10, 12),
 }
 
-# Elbow joint IDs
-ELBOW_IDS = {
-    "elbow_l": 7,  # lowerarm_l
-    "elbow_r": 8,  # lowerarm_r
-}
-
 # Skeleton connections (bone pairs) for visualization
 # Each tuple is (parent_joint_id, child_joint_id)
-SKELETON_CONNECTIONS = [
+# 这里是sam3d body的映射
+SAM3D_BODY_SKELETON_CONNECTIONS = [
     # Left arm
     (69, 5),  # neck -> shoulder_l
     (5, 7),  # shoulder_l -> elbow_l
@@ -86,11 +122,25 @@ SKELETON_CONNECTIONS = [
 ]
 
 # Skeleton connections after filtering, represented by contiguous joint indices.
-# Edge format is (parent_joint_index, child_joint_index), where index is from ID_TO_INDEX.
-TARGET_SKELETON_CONNECTIONS_INDEX = [
-    (ID_TO_INDEX[parent_id], ID_TO_INDEX[child_id])
-    for parent_id, child_id in SKELETON_CONNECTIONS
-    if parent_id in ID_TO_INDEX and child_id in ID_TO_INDEX
+
+FILTER_SKELETON_CONNECTIONS = [
+    # left arm
+    (14, 2),  # neck -> shoulder_l
+    (2, 4),  # shoulder_l -> elbow_l
+    (4, 13),  # elbow_l -> hand_l
+    # right arm
+    (14, 3),  # neck -> shoulder_r
+    (3, 5),  # shoulder_r -> elbow_r
+    (5, 12),  # elbow_r -> hand_r
+    # spine
+    (14, 6),  # neck -> hip_l
+    (14, 7),  # neck -> hip_r
+    # left leg
+    (6, 8),  # hip_l -> knee_l
+    (8, 10),  # knee_l -> foot_l
+    # right leg
+    (7, 9),  # hip_r -> knee_r
+    (9, 11),  # knee_r -> foot_r
 ]
 
 
@@ -153,3 +203,44 @@ class TrueDataConfig:
 
     left_cam_sam3d_kpt3d_dir: str
     right_cam_sam3d_kpt3d_dir: str
+
+
+def _normalize_kpts_array(kpts: np.ndarray) -> np.ndarray:
+    arr = np.asarray(kpts, dtype=np.float32)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim != 2:
+        raise ValueError(f"Expected keypoints shape (J,C), got {arr.shape}")
+    if arr.shape[1] not in (2, 3):
+        raise ValueError(f"Expected C in (2,3), got {arr.shape}")
+    return arr
+
+
+def filter_sam3d_body_kpts(kpts: np.ndarray) -> np.ndarray:
+    """Filter SAM3D body keypoints to FILTERED_KPTS_MAPPING order.
+
+    Directly uses SAM3D_BODY_MAPPING keys as source indices, so output order
+    matches FILTERED_KPTS_MAPPING exactly.
+    """
+    arr = _normalize_kpts_array(kpts)
+    selected = list(SAM3D_BODY_MAPPING.keys())
+    if max(selected) >= arr.shape[0]:
+        raise IndexError(
+            f"SAM3D_BODY_MAPPING index out of range for source shape {arr.shape}."
+        )
+    return arr[selected]
+
+
+def filter_unity_kpts(kpts: np.ndarray) -> np.ndarray:
+    """Filter Unity keypoints to FILTERED_KPTS_MAPPING order.
+
+    Directly uses UNITY_MAPPING keys as source indices, output order matches
+    filter_sam3d_body_kpts exactly.
+    """
+    arr = _normalize_kpts_array(kpts)
+    selected = list(UNITY_MAPPING.keys())
+    if max(selected) >= arr.shape[0]:
+        raise IndexError(
+            f"UNITY_MAPPING index out of range for source shape {arr.shape}."
+        )
+    return arr[selected]

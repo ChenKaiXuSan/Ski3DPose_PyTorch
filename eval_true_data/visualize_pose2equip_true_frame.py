@@ -22,9 +22,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from project.map_config import (
     ID_TO_INDEX,
-    SKELETON_CONNECTIONS,
+    SAM3D_BODY_SKELETON_CONNECTIONS,
     TARGET_IDS,
-    UNITY_MHR70_MAPPING,
+    SAM3D_BODY_MAPPING,
 )
 from project.models.pose2equip_net import Pose2EquipNet
 
@@ -89,7 +89,7 @@ def _to_model_joint_count(kpt: np.ndarray, expected_joints: int) -> np.ndarray:
 
 def _build_edges() -> List[Tuple[int, int]]:
     edges: List[Tuple[int, int]] = []
-    for a, b in SKELETON_CONNECTIONS:
+    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
         if a in ID_TO_INDEX and b in ID_TO_INDEX:
             edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
     return edges
@@ -98,7 +98,7 @@ def _build_edges() -> List[Tuple[int, int]]:
 def _build_labels() -> List[str]:
     labels: List[str] = []
     for i, jid in enumerate(TARGET_IDS):
-        labels.append(f"{i}:{UNITY_MHR70_MAPPING.get(jid, str(jid))}")
+        labels.append(f"{i}:{SAM3D_BODY_MAPPING.get(jid, str(jid))}")
     return labels
 
 
@@ -304,7 +304,7 @@ def main() -> None:
         help="Root containing <run_id>/<left|right>/frame_xxxxx_sam_3d_body_outputs.npz",
     )
     parser.add_argument(
-        "--run-id", type=str, default="pro_1", help="Run/person id under sam-root"
+        "--run-id", type=str, default="pro_2", help="Run/person id under sam-root"
     )
     parser.add_argument(
         "--side",
@@ -329,7 +329,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip_true_frame"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip/pose2equip_true_frame"
         ),
         help="Output directory",
     )

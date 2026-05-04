@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-'''
+"""
 File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader/whole_video_dataset_dual_view.py
 Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader
 Created Date: Tuesday February 10th 2026
@@ -21,7 +21,7 @@ Copyright (c) 2026 The University of Tsukuba
 HISTORY:
 Date      	By	Comments
 ----------	---	---------------------------------------------------------
-'''
+"""
 
 from __future__ import annotations
 
@@ -38,7 +38,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from project.map_config import ID_TO_INDEX, TARGET_IDS, UnityDataConfig
+from project.map_config import (
+    UnityDataConfig,
+    filter_sam3d_body_kpts,
+    filter_unity_kpts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,74 +79,9 @@ class LabeledUnityDataset(Dataset):
             raise ValueError(
                 "At least one of load_frames/load_2d_kpt/load_3d_kpt/load_mask must be enabled."
             )
-        self._source_index_cache: Dict[int, List[int]] = {}
 
     def __len__(self) -> int:
         return len(self._index_mapping)
-
-    @staticmethod
-    def _ordered_target_ids() -> List[int]:
-        # Keep target joint order consistent with ID_TO_INDEX.
-        return [jid for jid, _ in sorted(ID_TO_INDEX.items(), key=lambda kv: kv[1])]
-
-    @classmethod
-    def _select_source_joint_indices(cls, num_joints: int) -> List[int]:
-        """Map configured target ids to source array indices.
-
-        Priority:
-          1) direct index (jid)
-          2) compact target index from ID_TO_INDEX
-        """
-        selected: List[int] = []
-        for jid in cls._ordered_target_ids():
-            candidates = (jid, ID_TO_INDEX[jid])
-            src_idx = next((c for c in candidates if 0 <= c < num_joints), None)
-            if src_idx is None:
-                raise IndexError(
-                    f"Target joint id {jid} cannot be mapped for source joint count {num_joints}."
-                )
-            selected.append(int(src_idx))
-        return selected
-
-    def _get_or_build_source_joint_indices(self, num_joints: int) -> List[int]:
-        cached = self._source_index_cache.get(num_joints)
-        if cached is not None:
-            return cached
-        selected = self._select_source_joint_indices(num_joints)
-        self._source_index_cache[num_joints] = selected
-        return selected
-
-    @staticmethod
-    def _filter_keypoints_with_indices(
-        arr: np.ndarray, source_indices: List[int]
-    ) -> np.ndarray:
-        """Fast-path keypoint filtering using precomputed source indices."""
-        kpt = np.asarray(arr, dtype=np.float32)
-        if kpt.ndim == 3 and kpt.shape[0] == 1:
-            kpt = kpt[0]
-        if kpt.ndim != 2:
-            raise ValueError(f"Expected keypoints shape (J,C), got {kpt.shape}")
-        if max(source_indices) >= kpt.shape[0]:
-            raise IndexError(
-                f"Source index out of range for shape {kpt.shape} and indices up to {max(source_indices)}"
-            )
-        return kpt[source_indices]
-
-    @classmethod
-    def _filter_keypoints_by_target_ids(cls, arr: np.ndarray) -> np.ndarray:
-        """Filter keypoints to configured TARGET_IDS in a fixed order."""
-        kpt = np.asarray(arr, dtype=np.float32)
-        if kpt.ndim == 3 and kpt.shape[0] == 1:
-            kpt = kpt[0]
-        if kpt.ndim != 2:
-            raise ValueError(f"Expected keypoints shape (J,C), got {kpt.shape}")
-
-        # Ensure mapping uses the configured target ids.
-        if len(TARGET_IDS) != len(ID_TO_INDEX):
-            raise ValueError("TARGET_IDS and ID_TO_INDEX are inconsistent in size.")
-
-        source_indices = cls._select_source_joint_indices(kpt.shape[0])
-        return cls._filter_keypoints_with_indices(kpt, source_indices)
 
     @staticmethod
     def _item_get(item: Any, key: str, default: Any = None) -> Any:
@@ -282,7 +221,6 @@ class LabeledUnityDataset(Dataset):
         # Merge all instances into one foreground mask and keep channel dim.
         merged = np.any(masks > 0, axis=0)
         return merged[None, ...]
-
 
     @staticmethod
     def _is_empty_keypoint_array(arr: np.ndarray) -> bool:
@@ -504,12 +442,12 @@ class LabeledUnityDataset(Dataset):
         item: Dict[str, Any],
         cam1_frames_t: Optional[torch.Tensor],
         cam2_frames_t: Optional[torch.Tensor],
-        cam1_kpt2d_t: Optional[torch.Tensor],
-        cam2_kpt2d_t: Optional[torch.Tensor],
-        sam2d_cam1_t: Optional[torch.Tensor],
-        sam2d_cam2_t: Optional[torch.Tensor],
-        sam3d_cam1_t: Optional[torch.Tensor],
-        sam3d_cam2_t: Optional[torch.Tensor],
+        unity_gt_cam1_kpt2d_t: Optional[torch.Tensor],
+        unity_gt_cam2_kpt2d_t: Optional[torch.Tensor],
+        sam3d_cam1_kpt2d_t: Optional[torch.Tensor],
+        sam3d_cam2_kpt2d_t: Optional[torch.Tensor],
+        sam3d_cam1_kpt3d_t: Optional[torch.Tensor],
+        sam3d_cam2_kpt3d_t: Optional[torch.Tensor],
         mask_ski_t: Optional[torch.Tensor],
         mask_ski_pole_t: Optional[torch.Tensor],
         frame_indices_t: torch.Tensor,
@@ -525,30 +463,30 @@ class LabeledUnityDataset(Dataset):
             )
 
         if (
-            cam1_kpt2d_t is not None
-            and cam2_kpt2d_t is not None
-            and cam1_kpt2d_t.shape != cam2_kpt2d_t.shape
+            unity_gt_cam1_kpt2d_t is not None
+            and unity_gt_cam2_kpt2d_t is not None
+            and unity_gt_cam1_kpt2d_t.shape != unity_gt_cam2_kpt2d_t.shape
         ):
             raise ValueError(
-                f"Left/right GT 2D shape mismatch: {tuple(cam1_kpt2d_t.shape)} vs {tuple(cam2_kpt2d_t.shape)}"
+                f"Left/right GT 2D shape mismatch: {tuple(unity_gt_cam1_kpt2d_t.shape)} vs {tuple(unity_gt_cam2_kpt2d_t.shape)}"
             )
 
         if (
-            sam2d_cam1_t is not None
-            and sam2d_cam2_t is not None
-            and sam2d_cam1_t.shape != sam2d_cam2_t.shape
+            sam3d_cam1_kpt2d_t is not None
+            and sam3d_cam2_kpt2d_t is not None
+            and sam3d_cam1_kpt2d_t.shape != sam3d_cam2_kpt2d_t.shape
         ):
             raise ValueError(
-                f"Left/right SAM 2D shape mismatch: {tuple(sam2d_cam1_t.shape)} vs {tuple(sam2d_cam2_t.shape)}"
+                f"Left/right SAM 2D shape mismatch: {tuple(sam3d_cam1_kpt2d_t.shape)} vs {tuple(sam3d_cam2_kpt2d_t.shape)}"
             )
 
         if (
-            sam3d_cam1_t is not None
-            and sam3d_cam2_t is not None
-            and sam3d_cam1_t.shape != sam3d_cam2_t.shape
+            sam3d_cam1_kpt3d_t is not None
+            and sam3d_cam2_kpt3d_t is not None
+            and sam3d_cam1_kpt3d_t.shape != sam3d_cam2_kpt3d_t.shape
         ):
             raise ValueError(
-                f"Left/right SAM 3D shape mismatch: {tuple(sam3d_cam1_t.shape)} vs {tuple(sam3d_cam2_t.shape)}"
+                f"Left/right SAM 3D shape mismatch: {tuple(sam3d_cam1_kpt3d_t.shape)} vs {tuple(sam3d_cam2_kpt3d_t.shape)}"
             )
 
         t_ref = int(frame_indices_t.numel())
@@ -560,12 +498,12 @@ class LabeledUnityDataset(Dataset):
                 )
             t_ref = t_frames
 
-        if cam1_kpt2d_t is not None and int(cam1_kpt2d_t.shape[0]) != t_ref:
-            raise ValueError(f"GT 2D T {int(cam1_kpt2d_t.shape[0])} != ref T {t_ref}")
-        if sam2d_cam1_t is not None and int(sam2d_cam1_t.shape[0]) != t_ref:
-            raise ValueError(f"SAM 2D T {int(sam2d_cam1_t.shape[0])} != ref T {t_ref}")
-        if sam3d_cam1_t is not None and int(sam3d_cam1_t.shape[0]) != t_ref:
-            raise ValueError(f"SAM 3D T {int(sam3d_cam1_t.shape[0])} != ref T {t_ref}")
+        if unity_gt_cam1_kpt2d_t is not None and int(unity_gt_cam1_kpt2d_t.shape[0]) != t_ref:
+            raise ValueError(f"GT 2D T {int(unity_gt_cam1_kpt2d_t.shape[0])} != ref T {t_ref}")
+        if sam3d_cam1_kpt2d_t is not None and int(sam3d_cam1_kpt2d_t.shape[0]) != t_ref:
+            raise ValueError(f"SAM 2D T {int(sam3d_cam1_kpt2d_t.shape[0])} != ref T {t_ref}")
+        if sam3d_cam1_kpt3d_t is not None and int(sam3d_cam1_kpt3d_t.shape[0]) != t_ref:
+            raise ValueError(f"SAM 3D T {int(sam3d_cam1_kpt3d_t.shape[0])} != ref T {t_ref}")
         if mask_ski_t is not None:
             if mask_ski_t.ndim != 4 or int(mask_ski_t.shape[0]) != 1:
                 raise ValueError(
@@ -615,7 +553,6 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt3d_dir: Path,
         sam3d_cam2_kpt3d_dir: Path,
         common_idx: List[int],
-        apply_filtering: bool = True,
         sam3d_cam1_kpt2d_map: Optional[Dict[int, Path]] = None,
         sam3d_cam2_kpt2d_map: Optional[Dict[int, Path]] = None,
         sam3d_cam1_kpt3d_map: Optional[Dict[int, Path]] = None,
@@ -633,14 +570,13 @@ class LabeledUnityDataset(Dataset):
         """Load keypoints for a single variant.
 
         Args:
-            apply_filtering: If True, filter keypoints using TARGET_IDS. If False, keep all joints.
             sam3d_cam1_kpt2d_map: Pre-built SAM cam1 2D map (reused across variants).
             sam3d_cam2_kpt2d_map: Pre-built SAM cam2 2D map (reused across variants).
             sam3d_cam1_kpt3d_map: Pre-built SAM cam1 3D map (reused across variants).
             sam3d_cam2_kpt3d_map: Pre-built SAM cam2 3D map (reused across variants).
 
         Returns:
-            (cam1_kpt2d_t, cam2_kpt2d_t, gt_kpt3d_t, sam2d_cam1_t, sam2d_cam2_t, sam3d_cam1_t, sam3d_cam2_t, frame_indices_t)
+            (unity_gt_cam1_kpt2d_t, unity_gt_cam2_kpt2d_t, unity_gt_kpt3d_t, sam3d_cam1_kpt2d_t, sam3d_cam2_kpt2d_t, sam3d_cam1_kpt3d_t, sam3d_cam2_kpt3d_t, frame_indices_t)
         """
         cam1_kpt2d_map = (
             self._build_idx_file_map(cam1_kpt2d_dir, "kpt2d_*.npy")
@@ -682,67 +618,26 @@ class LabeledUnityDataset(Dataset):
                 else {}
             )
 
-        cam1_kpt2d: List[torch.Tensor] = []
-        cam2_kpt2d: List[torch.Tensor] = []
-        gt_kpt3d: List[torch.Tensor] = []
-        sam2d_cam1: List[torch.Tensor] = []
-        sam2d_cam2: List[torch.Tensor] = []
-        sam3d_cam1: List[torch.Tensor] = []
-        sam3d_cam2: List[torch.Tensor] = []
-
-        cam1_2d_sel: Optional[List[int]] = None
-        cam2_2d_sel: Optional[List[int]] = None
-        gt_3d_sel: Optional[List[int]] = None
-        sam1_2d_sel: Optional[List[int]] = None
-        sam2_2d_sel: Optional[List[int]] = None
-        sam1_3d_sel: Optional[List[int]] = None
-        sam2_3d_sel: Optional[List[int]] = None
+        unity_gt_cam1_kpt2d: List[torch.Tensor] = []
+        unity_gt_cam2_kpt2d: List[torch.Tensor] = []
+        unity_gt_kpt3d: List[torch.Tensor] = []
+        sam3d_cam1_kpt2d: List[torch.Tensor] = []
+        sam3d_cam2_kpt2d: List[torch.Tensor] = []
+        sam3d_cam1_kpt3d: List[torch.Tensor] = []
+        sam3d_cam2_kpt3d: List[torch.Tensor] = []
 
         for idx in common_idx:
             if self._load_2d_kpt:
                 cam1_2d = np.asarray(np.load(cam1_kpt2d_map[idx]), dtype=np.float32)
                 cam2_2d = np.asarray(np.load(cam2_kpt2d_map[idx]), dtype=np.float32)
 
-                if apply_filtering:
-                    if cam1_2d_sel is None:
-                        cam1_2d_sel = self._get_or_build_source_joint_indices(
-                            cam1_2d.shape[0]
-                        )
-                    if cam2_2d_sel is None:
-                        cam2_2d_sel = self._get_or_build_source_joint_indices(
-                            cam2_2d.shape[0]
-                        )
-                    cam1_kpt2d.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(cam1_2d, cam1_2d_sel)
-                        )
-                    )
-                    cam2_kpt2d.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(cam2_2d, cam2_2d_sel)
-                        )
-                    )
-                else:
-                    # No filtering: keep all joints as-is
-                    cam1_kpt2d.append(torch.from_numpy(cam1_2d))
-                    cam2_kpt2d.append(torch.from_numpy(cam2_2d))
+                unity_gt_cam1_kpt2d.append(torch.from_numpy(filter_unity_kpts(cam1_2d)))
+                unity_gt_cam2_kpt2d.append(torch.from_numpy(filter_unity_kpts(cam2_2d)))
 
             if self._load_3d_kpt:
                 gt_3d = np.asarray(np.load(kpt3d_map[idx]), dtype=np.float32)
 
-                if apply_filtering:
-                    if gt_3d_sel is None:
-                        gt_3d_sel = self._get_or_build_source_joint_indices(
-                            gt_3d.shape[0]
-                        )
-                    gt_kpt3d.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(gt_3d, gt_3d_sel)
-                        )
-                    )
-                else:
-                    # No filtering: keep all joints as-is
-                    gt_kpt3d.append(torch.from_numpy(gt_3d))
+                unity_gt_kpt3d.append(torch.from_numpy(filter_unity_kpts(gt_3d)))
 
             if self._load_2d_kpt:
                 sam1_2d = np.asarray(
@@ -752,29 +647,8 @@ class LabeledUnityDataset(Dataset):
                     np.load(sam3d_cam2_kpt2d_map[idx]), dtype=np.float32
                 )
 
-                if apply_filtering:
-                    if sam1_2d_sel is None:
-                        sam1_2d_sel = self._get_or_build_source_joint_indices(
-                            sam1_2d.shape[0]
-                        )
-                    if sam2_2d_sel is None:
-                        sam2_2d_sel = self._get_or_build_source_joint_indices(
-                            sam2_2d.shape[0]
-                        )
-                    sam2d_cam1.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(sam1_2d, sam1_2d_sel)
-                        )
-                    )
-                    sam2d_cam2.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(sam2_2d, sam2_2d_sel)
-                        )
-                    )
-                else:
-                    # No filtering: keep all joints as-is
-                    sam2d_cam1.append(torch.from_numpy(sam1_2d))
-                    sam2d_cam2.append(torch.from_numpy(sam2_2d))
+                sam3d_cam1_kpt2d.append(torch.from_numpy(filter_sam3d_body_kpts(sam1_2d)))
+                sam3d_cam2_kpt2d.append(torch.from_numpy(filter_sam3d_body_kpts(sam2_2d)))
 
             if self._load_3d_kpt:
                 sam1_3d = np.asarray(
@@ -784,59 +658,26 @@ class LabeledUnityDataset(Dataset):
                     np.load(sam3d_cam2_kpt3d_map[idx]), dtype=np.float32
                 )
 
-                if apply_filtering:
-                    if sam1_3d_sel is None:
-                        sam1_3d_sel = self._get_or_build_source_joint_indices(
-                            sam1_3d.shape[0]
-                        )
-                    if sam2_3d_sel is None:
-                        sam2_3d_sel = self._get_or_build_source_joint_indices(
-                            sam2_3d.shape[0]
-                        )
-                    sam3d_cam1.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(sam1_3d, sam1_3d_sel)
-                        )
-                    )
-                    sam3d_cam2.append(
-                        torch.from_numpy(
-                            self._filter_keypoints_with_indices(sam2_3d, sam2_3d_sel)
-                        )
-                    )
-                else:
-                    # No filtering: keep all joints as-is
-                    sam3d_cam1.append(torch.from_numpy(sam1_3d))
-                    sam3d_cam2.append(torch.from_numpy(sam2_3d))
+                sam3d_cam1_kpt3d.append(torch.from_numpy(filter_sam3d_body_kpts(sam1_3d)))
+                sam3d_cam2_kpt3d.append(torch.from_numpy(filter_sam3d_body_kpts(sam2_3d)))
 
-        cam1_kpt2d_t = (
-            torch.stack(cam1_kpt2d, dim=0) if self._load_2d_kpt else None
-        )
-        cam2_kpt2d_t = (
-            torch.stack(cam2_kpt2d, dim=0) if self._load_2d_kpt else None
-        )
-        gt_kpt3d_t = torch.stack(gt_kpt3d, dim=0) if self._load_3d_kpt else None
-        sam2d_cam1_t = (
-            torch.stack(sam2d_cam1, dim=0) if self._load_2d_kpt else None
-        )
-        sam2d_cam2_t = (
-            torch.stack(sam2d_cam2, dim=0) if self._load_2d_kpt else None
-        )
-        sam3d_cam1_t = (
-            torch.stack(sam3d_cam1, dim=0) if self._load_3d_kpt else None
-        )
-        sam3d_cam2_t = (
-            torch.stack(sam3d_cam2, dim=0) if self._load_3d_kpt else None
-        )
+        unity_gt_cam1_kpt2d_t = torch.stack(unity_gt_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
+        unity_gt_cam2_kpt2d_t = torch.stack(unity_gt_cam2_kpt2d, dim=0) if self._load_2d_kpt else None
+        unity_gt_kpt3d_t = torch.stack(unity_gt_kpt3d, dim=0) if self._load_3d_kpt else None
+        sam3d_cam1_kpt2d_t = torch.stack(sam3d_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
+        sam3d_cam2_kpt2d_t = torch.stack(sam3d_cam2_kpt2d, dim=0) if self._load_2d_kpt else None
+        sam3d_cam1_kpt3d_t = torch.stack(sam3d_cam1_kpt3d, dim=0) if self._load_3d_kpt else None
+        sam3d_cam2_kpt3d_t = torch.stack(sam3d_cam2_kpt3d, dim=0) if self._load_3d_kpt else None
         frame_indices_t = torch.tensor(common_idx, dtype=torch.long)
 
         return (
-            cam1_kpt2d_t,
-            cam2_kpt2d_t,
-            gt_kpt3d_t,
-            sam2d_cam1_t,
-            sam2d_cam2_t,
-            sam3d_cam1_t,
-            sam3d_cam2_t,
+            unity_gt_cam1_kpt2d_t,
+            unity_gt_cam2_kpt2d_t,
+            unity_gt_kpt3d_t,
+            sam3d_cam1_kpt2d_t,
+            sam3d_cam2_kpt2d_t,
+            sam3d_cam1_kpt3d_t,
+            sam3d_cam2_kpt3d_t,
             frame_indices_t,
         )
 
@@ -862,7 +703,6 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam2_kpt3d_dir = Path(item["sam3d_cam2_kpt3d_dir"])
         sam3_cam1_mask_ski_dir = Path(item["sam3_cam1_mask_ski_dir"])
         sam3_cam2_mask_ski_pole_dir = Path(item["sam3_cam2_mask_ski_pole_dir"])
-
         # Detect variants: character, pole, ski
         cam1_kpt2d_dirs = item.get("cam1_kpt2d_dirs")  # Dict[str, str]
         cam2_kpt2d_dirs = item.get("cam2_kpt2d_dirs")  # Dict[str, str]
@@ -985,7 +825,10 @@ class LabeledUnityDataset(Dataset):
             if idx in sam_valid_set
             and idx not in cam1_none_set
             and idx not in cam2_none_set
-            and (not self._load_mask or (mask_valid_set is not None and idx in mask_valid_set))
+            and (
+                not self._load_mask
+                or (mask_valid_set is not None and idx in mask_valid_set)
+            )
         ]
         skipped = len(all_common) - len(common_idx)
         if skipped:
@@ -1028,7 +871,9 @@ class LabeledUnityDataset(Dataset):
             )
 
             if self._load_mask:
-                missing_mask_ski = [idx for idx in all_common if idx not in mask_ski_map]
+                missing_mask_ski = [
+                    idx for idx in all_common if idx not in mask_ski_map
+                ]
                 missing_mask_ski_pole = [
                     idx for idx in all_common if idx not in mask_ski_pole_map
                 ]
@@ -1140,7 +985,9 @@ class LabeledUnityDataset(Dataset):
                 mask_ski_pole_t, target_t=t_after, time_dim=0
             )
             mask_ski_t = mask_ski_t.gt(0.5).to(torch.float32).permute(1, 0, 2, 3)
-            mask_ski_pole_t = mask_ski_pole_t.gt(0.5).to(torch.float32).permute(1, 0, 2, 3)
+            mask_ski_pole_t = (
+                mask_ski_pole_t.gt(0.5).to(torch.float32).permute(1, 0, 2, 3)
+            )
 
         src_t = len(common_idx)
         sel = self._temporal_resample_indices(src_t, t_after)
@@ -1157,17 +1004,14 @@ class LabeledUnityDataset(Dataset):
                 cam2_kpt2d_dir_variant = cam2_kpt2d_dir
                 kpt3d_dir_variant = kpt3d_dir
 
-            # Only apply filtering for 'character' variant; pole and ski keep all joints
-            apply_filtering = variant == "character"
-
             (
-                cam1_kpt2d_t,
-                cam2_kpt2d_t,
-                gt_kpt3d_t,
-                sam2d_cam1_t,
-                sam2d_cam2_t,
-                sam3d_cam1_t,
-                sam3d_cam2_t,
+                unity_gt_cam1_kpt2d_t,
+                unity_gt_cam2_kpt2d_t,
+                unity_gt_kpt3d_t,
+                sam3d_cam1_kpt2d_t,
+                sam3d_cam2_kpt2d_t,
+                sam3d_cam1_kpt3d_t,
+                sam3d_cam2_kpt3d_t,
                 frame_indices_t,
             ) = self._load_single_variant_keypoints(
                 cam1_kpt2d_dir=cam1_kpt2d_dir_variant,
@@ -1178,50 +1022,57 @@ class LabeledUnityDataset(Dataset):
                 sam3d_cam1_kpt3d_dir=sam3d_cam1_kpt3d_dir,
                 sam3d_cam2_kpt3d_dir=sam3d_cam2_kpt3d_dir,
                 common_idx=common_idx,
-                apply_filtering=apply_filtering,
-                sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map if self._load_2d_kpt else None,
-                sam3d_cam2_kpt2d_map=sam3d_cam2_kpt2d_map if self._load_2d_kpt else None,
-                sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map if self._load_3d_kpt else None,
-                sam3d_cam2_kpt3d_map=sam3d_cam2_kpt3d_map if self._load_3d_kpt else None,
+                sam3d_cam1_kpt2d_map=(
+                    sam3d_cam1_kpt2d_map if self._load_2d_kpt else None
+                ),
+                sam3d_cam2_kpt2d_map=(
+                    sam3d_cam2_kpt2d_map if self._load_2d_kpt else None
+                ),
+                sam3d_cam1_kpt3d_map=(
+                    sam3d_cam1_kpt3d_map if self._load_3d_kpt else None
+                ),
+                sam3d_cam2_kpt3d_map=(
+                    sam3d_cam2_kpt3d_map if self._load_3d_kpt else None
+                ),
             )
 
             # Apply temporal resampling
-            if cam1_kpt2d_t is not None:
-                cam1_kpt2d_t = cam1_kpt2d_t[sel]
-            if cam2_kpt2d_t is not None:
-                cam2_kpt2d_t = cam2_kpt2d_t[sel]
-            if gt_kpt3d_t is not None:
-                gt_kpt3d_t = gt_kpt3d_t[sel]
-            if sam2d_cam1_t is not None:
-                sam2d_cam1_t = sam2d_cam1_t[sel]
-            if sam2d_cam2_t is not None:
-                sam2d_cam2_t = sam2d_cam2_t[sel]
-            if sam3d_cam1_t is not None:
-                sam3d_cam1_t = sam3d_cam1_t[sel]
-            if sam3d_cam2_t is not None:
-                sam3d_cam2_t = sam3d_cam2_t[sel]
+            if unity_gt_cam1_kpt2d_t is not None:
+                unity_gt_cam1_kpt2d_t = unity_gt_cam1_kpt2d_t[sel]
+            if unity_gt_cam2_kpt2d_t is not None:
+                unity_gt_cam2_kpt2d_t = unity_gt_cam2_kpt2d_t[sel]
+            if unity_gt_kpt3d_t is not None:
+                unity_gt_kpt3d_t = unity_gt_kpt3d_t[sel]
+            if sam3d_cam1_kpt2d_t is not None:
+                sam3d_cam1_kpt2d_t = sam3d_cam1_kpt2d_t[sel]
+            if sam3d_cam2_kpt2d_t is not None:
+                sam3d_cam2_kpt2d_t = sam3d_cam2_kpt2d_t[sel]
+            if sam3d_cam1_kpt3d_t is not None:
+                sam3d_cam1_kpt3d_t = sam3d_cam1_kpt3d_t[sel]
+            if sam3d_cam2_kpt3d_t is not None:
+                sam3d_cam2_kpt3d_t = sam3d_cam2_kpt3d_t[sel]
             frame_indices_t = frame_indices_t[sel]
 
             variant_kpts[variant] = {
-                "cam1_kpt2d": cam1_kpt2d_t,
-                "cam2_kpt2d": cam2_kpt2d_t,
-                "gt_kpt3d": gt_kpt3d_t,
-                "sam2d_cam1": sam2d_cam1_t,
-                "sam2d_cam2": sam2d_cam2_t,
-                "sam3d_cam1": sam3d_cam1_t,
-                "sam3d_cam2": sam3d_cam2_t,
+                "unity_gt_cam1_kpt2d": unity_gt_cam1_kpt2d_t,
+                "unity_gt_cam2_kpt2d": unity_gt_cam2_kpt2d_t,
+                "unity_gt_kpt3d": unity_gt_kpt3d_t,
+                "sam3d_cam1_kpt2d": sam3d_cam1_kpt2d_t,
+                "sam3d_cam2_kpt2d": sam3d_cam2_kpt2d_t,
+                "sam3d_cam1_kpt3d": sam3d_cam1_kpt3d_t,
+                "sam3d_cam2_kpt3d": sam3d_cam2_kpt3d_t,
             }
 
         self._validate_stereo_pair_consistency(
             item=item,
             cam1_frames_t=cam1_frames_t,
             cam2_frames_t=cam2_frames_t,
-            cam1_kpt2d_t=variant_kpts[variants[0]]["cam1_kpt2d"],
-            cam2_kpt2d_t=variant_kpts[variants[0]]["cam2_kpt2d"],
-            sam2d_cam1_t=variant_kpts[variants[0]]["sam2d_cam1"],
-            sam2d_cam2_t=variant_kpts[variants[0]]["sam2d_cam2"],
-            sam3d_cam1_t=variant_kpts[variants[0]]["sam3d_cam1"],
-            sam3d_cam2_t=variant_kpts[variants[0]]["sam3d_cam2"],
+            unity_gt_cam1_kpt2d_t=variant_kpts[variants[0]]["unity_gt_cam1_kpt2d"],
+            unity_gt_cam2_kpt2d_t=variant_kpts[variants[0]]["unity_gt_cam2_kpt2d"],
+            sam3d_cam1_kpt2d_t=variant_kpts[variants[0]]["sam3d_cam1_kpt2d"],
+            sam3d_cam2_kpt2d_t=variant_kpts[variants[0]]["sam3d_cam2_kpt2d"],
+            sam3d_cam1_kpt3d_t=variant_kpts[variants[0]]["sam3d_cam1_kpt3d"],
+            sam3d_cam2_kpt3d_t=variant_kpts[variants[0]]["sam3d_cam2_kpt3d"],
             mask_ski_t=mask_ski_t,
             mask_ski_pole_t=mask_ski_pole_t,
             frame_indices_t=frame_indices_t,
@@ -1262,19 +1113,19 @@ class LabeledUnityDataset(Dataset):
 
             # GT: all variants (character, pole, ski)
             for v in variants:
-                if variant_kpts[v]["cam1_kpt2d"] is not None:
-                    out["kpt2d_gt"][f"{v}_cam1"] = variant_kpts[v]["cam1_kpt2d"]
-                if variant_kpts[v]["cam2_kpt2d"] is not None:
-                    out["kpt2d_gt"][f"{v}_cam2"] = variant_kpts[v]["cam2_kpt2d"]
+                if variant_kpts[v]["unity_gt_cam1_kpt2d"] is not None:
+                    out["kpt2d_gt"][f"{v}_cam1"] = variant_kpts[v]["unity_gt_cam1_kpt2d"]
+                if variant_kpts[v]["unity_gt_cam2_kpt2d"] is not None:
+                    out["kpt2d_gt"][f"{v}_cam2"] = variant_kpts[v]["unity_gt_cam2_kpt2d"]
 
             # SAM: character only
-            if variant_kpts["character"]["sam2d_cam1"] is not None:
+            if variant_kpts["character"]["sam3d_cam1_kpt2d"] is not None:
                 out["kpt2d_sam"]["character_cam1"] = variant_kpts["character"][
-                    "sam2d_cam1"
+                    "sam3d_cam1_kpt2d"
                 ]
-            if variant_kpts["character"]["sam2d_cam2"] is not None:
+            if variant_kpts["character"]["sam3d_cam2_kpt2d"] is not None:
                 out["kpt2d_sam"]["character_cam2"] = variant_kpts["character"][
-                    "sam2d_cam2"
+                    "sam3d_cam2_kpt2d"
                 ]
 
         if self._load_3d_kpt:
@@ -1283,17 +1134,17 @@ class LabeledUnityDataset(Dataset):
 
             # GT: all variants (character, pole, ski)
             for v in variants:
-                if variant_kpts[v]["gt_kpt3d"] is not None:
-                    out["kpt3d_gt"][v] = variant_kpts[v]["gt_kpt3d"]
+                if variant_kpts[v]["unity_gt_kpt3d"] is not None:
+                    out["kpt3d_gt"][v] = variant_kpts[v]["unity_gt_kpt3d"]
 
             # SAM: character only
-            if variant_kpts["character"]["sam3d_cam1"] is not None:
+            if variant_kpts["character"]["sam3d_cam1_kpt3d"] is not None:
                 out["kpt3d_sam"]["character_cam1"] = variant_kpts["character"][
-                    "sam3d_cam1"
+                    "sam3d_cam1_kpt3d"
                 ]
-            if variant_kpts["character"]["sam3d_cam2"] is not None:
+            if variant_kpts["character"]["sam3d_cam2_kpt3d"] is not None:
                 out["kpt3d_sam"]["character_cam2"] = variant_kpts["character"][
-                    "sam3d_cam2"
+                    "sam3d_cam2_kpt3d"
                 ]
 
         return out
