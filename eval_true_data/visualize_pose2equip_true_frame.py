@@ -21,10 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from project.map_config import (
-    ID_TO_INDEX,
-    SAM3D_BODY_SKELETON_CONNECTIONS,
-    TARGET_IDS,
-    SAM3D_BODY_MAPPING,
+    FILTERED_KPTS_MAPPING,
+    FILTER_SKELETON_CONNECTIONS,
+    filter_sam3d_body_kpts,
 )
 from project.models.pose2equip_net import Pose2EquipNet
 
@@ -62,44 +61,23 @@ def _load_record(npz_path: Path) -> Dict[str, Any]:
     return rec
 
 
-def _to_model_joint_count(kpt: np.ndarray, expected_joints: int) -> np.ndarray:
-    if kpt.ndim != 2 or kpt.shape[1] not in (2, 3):
-        raise ValueError(f"Expected keypoint shape [J,2/3], got {kpt.shape}")
-    if kpt.shape[0] == expected_joints:
-        return kpt.astype(np.float32)
-
-    # Keep mapping policy aligned with unity-frame visualization for consistency.
-    src_idx: List[int] = []
-    for jid in [jid for jid, _ in sorted(ID_TO_INDEX.items(), key=lambda kv: kv[1])]:
-        candidates = (jid, ID_TO_INDEX[jid])
-        mapped = next((c for c in candidates if 0 <= c < kpt.shape[0]), None)
-        if mapped is None:
-            raise IndexError(
-                f"Target joint id {jid} cannot be mapped for source joint count {kpt.shape[0]}."
-            )
-        src_idx.append(int(mapped))
-
-    filtered = kpt[src_idx]
-    if filtered.shape[0] != expected_joints:
+def _ensure_joint_count(kpt: np.ndarray, expected_joints: int, source: str) -> np.ndarray:
+    arr = np.asarray(kpt, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] not in (2, 3):
+        raise ValueError(f"Expected {source} shape [J,2/3], got {arr.shape}")
+    if arr.shape[0] != expected_joints:
         raise ValueError(
-            f"Joint count mismatch after filtering: expected {expected_joints}, got {filtered.shape[0]}"
+            f"{source} joint count mismatch: expected {expected_joints}, got {arr.shape[0]}"
         )
-    return filtered.astype(np.float32)
+    return arr
 
 
 def _build_edges() -> List[Tuple[int, int]]:
-    edges: List[Tuple[int, int]] = []
-    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
-        if a in ID_TO_INDEX and b in ID_TO_INDEX:
-            edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
-    return edges
+    return list(FILTER_SKELETON_CONNECTIONS)
 
 
 def _build_labels() -> List[str]:
-    labels: List[str] = []
-    for i, jid in enumerate(TARGET_IDS):
-        labels.append(f"{i}:{SAM3D_BODY_MAPPING.get(jid, str(jid))}")
-    return labels
+    return [f"{i}:{name}" for i, name in FILTERED_KPTS_MAPPING.items()]
 
 
 def _extract_float_token(token: str) -> Optional[float]:
@@ -320,7 +298,7 @@ def main() -> None:
         help="Specific frame index. Default: middle one",
     )
     parser.add_argument(
-        "--max-frames", type=int, default=10, help="How many frames to visualize"
+        "--max-frames", type=int, default=20, help="How many frames to visualize"
     )
     parser.add_argument(
         "--stride", type=int, default=30, help="Frame stride when max-frames > 1"
@@ -378,7 +356,7 @@ def main() -> None:
     image_size = int(cfg.data.img_size)
     ckpt_path = _select_best_ckpt(args.ckpt_dir)
     model = _load_pose2equip_from_ckpt(ckpt_path, cfg, device)
-    expected_joints = int(getattr(model.pose_encoder, "num_joints", len(ID_TO_INDEX)))
+    expected_joints = int(getattr(model.pose_encoder, "num_joints", 15))
 
     print(f"[INFO] Best ckpt: {ckpt_path}")
 
@@ -431,8 +409,16 @@ def main() -> None:
         else:
             kpt2d = kpt3d[:, :2].astype(np.float32)
 
-        kpt2d_t = _to_model_joint_count(kpt2d, expected_joints)
-        kpt3d_t = _to_model_joint_count(kpt3d, expected_joints)
+        kpt2d_t = _ensure_joint_count(
+            filter_sam3d_body_kpts(kpt2d),
+            expected_joints,
+            source="SAM 2D keypoints",
+        )
+        kpt3d_t = _ensure_joint_count(
+            filter_sam3d_body_kpts(kpt3d),
+            expected_joints,
+            source="SAM 3D keypoints",
+        )
 
         if kpt3d_t.shape[0] != expected_joints:
             raise ValueError(
@@ -482,7 +468,9 @@ def main() -> None:
                     "side": args.side,
                     "frame_index": int(idx),
                     "npz_path": str(npz_path),
-                    "target_joint_ids": TARGET_IDS,
+                    "target_joint_names": [
+                        FILTERED_KPTS_MAPPING[i] for i in range(len(FILTERED_KPTS_MAPPING))
+                    ],
                     "target_kpt3d": kpt3d_t.tolist(),
                     "pose2equip_ckpt": str(ckpt_path),
                     "equipment_labels": EQUIP_LABELS,

@@ -21,10 +21,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from project.map_config import (
-    ID_TO_INDEX,
-    SAM3D_BODY_SKELETON_CONNECTIONS,
-    TARGET_IDS,
-    SAM3D_BODY_MAPPING,
+    FILTERED_KPTS_MAPPING,
+    FILTER_SKELETON_CONNECTIONS,
+    filter_sam3d_body_kpts,
+    filter_unity_kpts,
 )
 from project.models.dual2pose_net import Dual2PoseNet
 
@@ -121,99 +121,30 @@ def _read_rgb(path: Path) -> np.ndarray:
 
 
 def _frame_to_video_tensor(frame_rgb: np.ndarray, device: torch.device) -> torch.Tensor:
-    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(2, 0, 1)
+    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(
+        2, 0, 1
+    )
     if x.max() <= 1.5:
         x = x * 255.0
     x = x.unsqueeze(0).unsqueeze(2)
     return x.to(device)
 
 
-def _to_model_joint_count(
-    kpt: np.ndarray,
-    expected_joints: int,
-    source_indices: Optional[List[int]] = None,
+def _ensure_joint_count(
+    kpt: np.ndarray, expected_joints: int, source: str
 ) -> np.ndarray:
-    if kpt.ndim != 2 or kpt.shape[1] not in (2, 3):
-        raise ValueError(f"Expected keypoint shape [J,2/3], got {kpt.shape}")
-
-    if source_indices is not None:
-        if len(source_indices) != int(expected_joints):
-            raise ValueError(
-                f"source_indices len mismatch: expected {expected_joints}, got {len(source_indices)}"
-            )
-        if max(source_indices) >= int(kpt.shape[0]):
-            raise ValueError(
-                "source_indices out of bounds for source keypoints: "
-                f"max_index={max(source_indices)}, source_joints={kpt.shape[0]}"
-            )
-        return kpt[source_indices].astype(np.float32)
-
-    # Case 1: already in target compact layout [15,2/3].
-    if int(kpt.shape[0]) == int(expected_joints):
-        return kpt.astype(np.float32)
-
-    # Case 2: source is full Unity-MHR70-like layout, use target joint IDs as indices.
-    max_target_id = max(TARGET_IDS)
-    if int(kpt.shape[0]) > int(max_target_id):
-        return kpt[TARGET_IDS].astype(np.float32)
-
-    raise ValueError(
-        "Unsupported keypoint layout for remapping: "
-        f"source_joints={kpt.shape[0]}, expected_joints={expected_joints}, "
-        f"required_source_joints>{max_target_id} for id-based remap"
-    )
-
-
-def _load_target_source_indices_by_joint_names(
-    joint_names_path: Optional[str],
-) -> Optional[List[int]]:
-    if not joint_names_path:
-        return None
-
-    path = Path(str(joint_names_path))
-    if not path.exists():
-        return None
-
-    try:
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    names_obj = data.get("joint_names") if isinstance(data, dict) else None
-    if not isinstance(names_obj, list) or len(names_obj) == 0:
-        return None
-
-    names: List[str] = [str(x) for x in names_obj]
-    exact = {name: idx for idx, name in enumerate(names)}
-    lower = {name.lower(): idx for idx, name in enumerate(names)}
-
-    src_idx: List[int] = []
-    for jid in TARGET_IDS:
-        target_name = str(SAM3D_BODY_MAPPING.get(jid, ""))
-        idx = exact.get(target_name)
-        if idx is None:
-            idx = lower.get(target_name.lower())
-        if idx is None:
-            return None
-        src_idx.append(int(idx))
-
-    return src_idx
+    arr = np.asarray(kpt, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] not in (2, 3):
+        raise ValueError(f"Expected {source} shape [J,2/3], got {arr.shape}")
+    if int(arr.shape[0]) != int(expected_joints):
+        raise ValueError(
+            f"{source} joint count mismatch: expected {expected_joints}, got {arr.shape[0]}"
+        )
+    return arr
 
 
 def _build_edges() -> List[Tuple[int, int]]:
-    edges: List[Tuple[int, int]] = []
-    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
-        if a in ID_TO_INDEX and b in ID_TO_INDEX:
-            edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
-    return edges
-
-
-def _build_labels() -> List[str]:
-    labels: List[str] = []
-    for i, jid in enumerate(TARGET_IDS):
-        labels.append(f"{i}:{SAM3D_BODY_MAPPING.get(jid, str(jid))}")
-    return labels
+    return list(FILTER_SKELETON_CONNECTIONS)
 
 
 def _load_dual2pose_from_ckpt(
@@ -239,7 +170,11 @@ def _load_dual2pose_from_ckpt(
         m = block_pat.match(key)
         if m is not None:
             block_ids.add(int(m.group(1)))
-    n_layers = (max(block_ids) + 1) if block_ids else int(getattr(cfg.dual2pose, "n_layers", 4))
+    n_layers = (
+        (max(block_ids) + 1)
+        if block_ids
+        else int(getattr(cfg.dual2pose, "n_layers", 4))
+    )
 
     gate_in = int(model_state["gating.mlp.0.weight"].shape[1])
     use_conf = gate_in > 9
@@ -318,7 +253,9 @@ def _filter_edges_by_length(
     return [e for e, d in zip(valid_edges, lengths) if d <= upper]
 
 
-def _draw_3d(ax, xyz: np.ndarray, edges: List[Tuple[int, int]], title: str, color: str) -> None:
+def _draw_3d(
+    ax, xyz: np.ndarray, edges: List[Tuple[int, int]], title: str, color: str
+) -> None:
     ax.set_title(title)
     ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=16, c=color, alpha=0.9)
     draw_edges = _filter_edges_by_length(xyz, edges, max_ratio=2.5)
@@ -370,7 +307,9 @@ def _draw_3d_compare(
     edges: List[Tuple[int, int]],
 ) -> None:
     ax.set_title("Dual2Pose fused")
-    ax.scatter(left_3d[:, 0], left_3d[:, 1], left_3d[:, 2], s=10, c="tab:blue", alpha=0.3)
+    ax.scatter(
+        left_3d[:, 0], left_3d[:, 1], left_3d[:, 2], s=10, c="tab:blue", alpha=0.3
+    )
     ax.scatter(
         right_3d[:, 0], right_3d[:, 1], right_3d[:, 2], s=10, c="tab:orange", alpha=0.3
     )
@@ -378,7 +317,9 @@ def _draw_3d_compare(
         fused_3d[:, 0], fused_3d[:, 1], fused_3d[:, 2], s=16, c="tab:red", alpha=0.9
     )
     if gt_3d is not None:
-        ax.scatter(gt_3d[:, 0], gt_3d[:, 1], gt_3d[:, 2], s=10, c="tab:green", alpha=0.45)
+        ax.scatter(
+            gt_3d[:, 0], gt_3d[:, 1], gt_3d[:, 2], s=10, c="tab:green", alpha=0.45
+        )
 
     draw_edges = _filter_edges_by_length(fused_3d, edges, max_ratio=2.5)
     for i, j in draw_edges:
@@ -415,6 +356,18 @@ def _build_alpha_diagnostics(
         "l2_hat_to_right": float(np.linalg.norm(p_hat - p_right, axis=1).mean()),
         "l2_p0_to_left": float(np.linalg.norm(p0 - p_left, axis=1).mean()),
         "l2_p0_to_right": float(np.linalg.norm(p0 - p_right, axis=1).mean()),
+    }
+
+
+def _build_fused_gt_metrics(p_hat: np.ndarray, gt_3d: np.ndarray) -> Dict[str, float]:
+    err = p_hat - gt_3d
+    per_joint_l2 = np.linalg.norm(err, axis=1)
+    return {
+        "mpjpe": float(per_joint_l2.mean()),
+        "mae_x": float(np.abs(err[:, 0]).mean()),
+        "mae_y": float(np.abs(err[:, 1]).mean()),
+        "mae_z": float(np.abs(err[:, 2]).mean()),
+        "p95_l2": float(np.percentile(per_joint_l2, 95)),
     }
 
 
@@ -513,11 +466,18 @@ def main() -> None:
         choices=["train", "val", "test"],
         help="Split to run inference on",
     )
-    parser.add_argument("--max-samples", type=int, default=5, help="Max number of sample sequences")
     parser.add_argument(
-        "--max-frames-per-sample", type=int, default=10, help="Max frames per sample sequence"
+        "--max-samples", type=int, default=5, help="Max number of sample sequences"
     )
-    parser.add_argument("--frame-stride", type=int, default=5, help="Frame stride within one sample")
+    parser.add_argument(
+        "--max-frames-per-sample",
+        type=int,
+        default=10,
+        help="Max frames per sample sequence",
+    )
+    parser.add_argument(
+        "--frame-stride", type=int, default=5, help="Frame stride within one sample"
+    )
     parser.add_argument("--device", type=str, default="cuda", help="Inference device")
     parser.add_argument(
         "--rigid-align-right-to-left",
@@ -557,7 +517,7 @@ def main() -> None:
     print(f"[INFO] rigid_align_right_to_left={rigid_align_right_to_left}")
 
     model = _load_dual2pose_from_ckpt(ckpt_path, cfg, device)
-    expected_joints = int(getattr(model, "num_joints", len(ID_TO_INDEX)))
+    expected_joints = int(getattr(model, "num_joints", 15))
 
     split_items = _load_fold_items(cfg, int(args.fold), args.split)
     if len(split_items) == 0:
@@ -587,8 +547,12 @@ def main() -> None:
 
         frame1_map = _build_idx_file_map(cam1_frames_dir, ["*.png", "*.jpg", "*.jpeg"])
         frame2_map = _build_idx_file_map(cam2_frames_dir, ["*.png", "*.jpg", "*.jpeg"])
-        sam3d_1_map = _build_idx_file_map(sam3d_cam1_kpt3d_dir, ["kpt3d_*.npy", "*.npy"])
-        sam3d_2_map = _build_idx_file_map(sam3d_cam2_kpt3d_dir, ["kpt3d_*.npy", "*.npy"])
+        sam3d_1_map = _build_idx_file_map(
+            sam3d_cam1_kpt3d_dir, ["kpt3d_*.npy", "*.npy"]
+        )
+        sam3d_2_map = _build_idx_file_map(
+            sam3d_cam2_kpt3d_dir, ["kpt3d_*.npy", "*.npy"]
+        )
 
         common_indices = sorted(
             set(frame1_map.keys())
@@ -606,7 +570,9 @@ def main() -> None:
         action_id = str(sample_dict.get("action_id", "unknown"))
         cam1_id = str(sample_dict.get("cam1_id", "unknown"))
         cam2_id = str(sample_dict.get("cam2_id", "unknown"))
-        sample_tag = f"sample_{sample_idx:03d}_{person_id}_{action_id}_{cam1_id}_{cam2_id}"
+        sample_tag = (
+            f"sample_{sample_idx:03d}_{person_id}_{action_id}_{cam1_id}_{cam2_id}"
+        )
 
         gt_character_map: Dict[int, Path] = {}
         kpt3d_dirs = sample_dict.get("kpt3d_dirs")
@@ -614,10 +580,6 @@ def main() -> None:
             gt_character_map = _build_idx_file_map(
                 Path(str(kpt3d_dirs["character"])), ["frame_*.npy", "*.npy"]
             )
-
-        gt_source_indices = _load_target_source_indices_by_joint_names(
-            sample_dict.get("joint_names_path")
-        )
 
         gt_cam1_2d_map: Dict[int, Path] = {}
         gt_cam2_2d_map: Dict[int, Path] = {}
@@ -647,6 +609,7 @@ def main() -> None:
         pred_dir = sample_out / "pred"
         vis_dir.mkdir(parents=True, exist_ok=True)
         pred_dir.mkdir(parents=True, exist_ok=True)
+        sample_mpjpe: List[float] = []
 
         for frame_idx in picked_indices:
             frame1 = _read_rgb(frame1_map[frame_idx])
@@ -654,8 +617,12 @@ def main() -> None:
             left_raw = np.asarray(np.load(sam3d_1_map[frame_idx]), dtype=np.float32)
             right_raw = np.asarray(np.load(sam3d_2_map[frame_idx]), dtype=np.float32)
 
-            left_3d = _to_model_joint_count(left_raw, expected_joints)
-            right_3d = _to_model_joint_count(right_raw, expected_joints)
+            left_3d = _ensure_joint_count(
+                filter_sam3d_body_kpts(left_raw), expected_joints, "SAM cam1 3D"
+            )
+            right_3d = _ensure_joint_count(
+                filter_sam3d_body_kpts(right_raw), expected_joints, "SAM cam2 3D"
+            )
             rigid_diag: Dict[str, float] = {
                 "applied": 0.0,
                 "valid_points": 0.0,
@@ -672,26 +639,33 @@ def main() -> None:
             gt_cam1_2d: Optional[np.ndarray] = None
             gt_cam2_2d: Optional[np.ndarray] = None
             mpjpe_to_gt: Optional[float] = None
+            fused_gt_metrics: Optional[Dict[str, float]] = None
             if frame_idx in gt_character_map:
-                gt_raw = np.asarray(np.load(gt_character_map[frame_idx]), dtype=np.float32)
-                gt_3d = _to_model_joint_count(
-                    gt_raw,
+                gt_raw = np.asarray(
+                    np.load(gt_character_map[frame_idx]), dtype=np.float32
+                )
+                gt_3d = _ensure_joint_count(
+                    filter_unity_kpts(gt_raw),
                     expected_joints,
-                    source_indices=gt_source_indices,
+                    "Unity GT 3D",
                 )
             if frame_idx in gt_cam1_2d_map:
-                gt_cam1_raw = np.asarray(np.load(gt_cam1_2d_map[frame_idx]), dtype=np.float32)
-                gt_cam1_2d = _to_model_joint_count(
-                    gt_cam1_raw,
+                gt_cam1_raw = np.asarray(
+                    np.load(gt_cam1_2d_map[frame_idx]), dtype=np.float32
+                )
+                gt_cam1_2d = _ensure_joint_count(
+                    filter_unity_kpts(gt_cam1_raw),
                     expected_joints,
-                    source_indices=gt_source_indices,
+                    "Unity GT cam1 2D",
                 )
             if frame_idx in gt_cam2_2d_map:
-                gt_cam2_raw = np.asarray(np.load(gt_cam2_2d_map[frame_idx]), dtype=np.float32)
-                gt_cam2_2d = _to_model_joint_count(
-                    gt_cam2_raw,
+                gt_cam2_raw = np.asarray(
+                    np.load(gt_cam2_2d_map[frame_idx]), dtype=np.float32
+                )
+                gt_cam2_2d = _ensure_joint_count(
+                    filter_unity_kpts(gt_cam2_raw),
                     expected_joints,
-                    source_indices=gt_source_indices,
+                    "Unity GT cam2 2D",
                 )
 
             p_left_t = torch.from_numpy(left_3d).unsqueeze(0).unsqueeze(0).to(device)
@@ -726,11 +700,22 @@ def main() -> None:
             )
 
             if gt_3d is not None:
-                mpjpe_to_gt = float(np.linalg.norm(p_hat - gt_3d, axis=1).mean())
+                fused_gt_metrics = _build_fused_gt_metrics(p_hat, gt_3d)
+                mpjpe_to_gt = fused_gt_metrics["mpjpe"]
+                sample_mpjpe.append(mpjpe_to_gt)
+                print(
+                    "[METRIC] "
+                    f"sample={sample_idx} frame={frame_idx} "
+                    f"mpjpe={fused_gt_metrics['mpjpe']:.4f} "
+                    f"mae_xyz=({fused_gt_metrics['mae_x']:.4f},"
+                    f"{fused_gt_metrics['mae_y']:.4f},"
+                    f"{fused_gt_metrics['mae_z']:.4f}) "
+                    f"p95_l2={fused_gt_metrics['p95_l2']:.4f}"
+                )
 
-            fig = plt.figure(figsize=(30, 7))
+            fig = plt.figure(figsize=(36, 7))
 
-            ax1 = fig.add_subplot(1, 5, 1)
+            ax1 = fig.add_subplot(1, 6, 1)
             _draw_frame_with_gt_2d(
                 ax1,
                 frame1,
@@ -739,7 +724,7 @@ def main() -> None:
                 "cam1 frame + GT 2D" if gt_cam1_2d is not None else "cam1 frame",
             )
 
-            ax2 = fig.add_subplot(1, 5, 2)
+            ax2 = fig.add_subplot(1, 6, 2)
             _draw_frame_with_gt_2d(
                 ax2,
                 frame2,
@@ -748,19 +733,22 @@ def main() -> None:
                 "cam2 frame + GT 2D" if gt_cam2_2d is not None else "cam2 frame",
             )
 
-            ax3 = fig.add_subplot(1, 5, 3, projection="3d")
+            ax3 = fig.add_subplot(1, 6, 3, projection="3d")
             _draw_3d(ax3, left_3d, edges, "sam3d cam1", "tab:blue")
 
-            ax4 = fig.add_subplot(1, 5, 4, projection="3d")
-            _draw_3d_compare(ax4, left_3d, right_3d, p_hat, gt_3d, edges)
+            ax4 = fig.add_subplot(1, 6, 4, projection="3d")
+            _draw_3d(ax4, right_3d, edges, "sam3d cam2", "tab:orange")
 
-            ax5 = fig.add_subplot(1, 5, 5)
-            ax5.set_title("alpha per joint")
-            ax5.bar(np.arange(len(alpha)), alpha, color="tab:green")
-            ax5.set_xlabel("joint index")
-            ax5.set_ylabel("alpha")
-            ax5.set_ylim(0.0, 1.0)
-            ax5.grid(True, alpha=0.25)
+            ax5 = fig.add_subplot(1, 6, 5, projection="3d")
+            _draw_3d_compare(ax5, left_3d, right_3d, p_hat, gt_3d, edges)
+
+            ax6 = fig.add_subplot(1, 6, 6)
+            ax6.set_title("alpha per joint")
+            ax6.bar(np.arange(len(alpha)), alpha, color="tab:green")
+            ax6.set_xlabel("joint index")
+            ax6.set_ylabel("alpha")
+            ax6.set_ylim(0.0, 1.0)
+            ax6.grid(True, alpha=0.25)
 
             title = (
                 f"fold={args.fold} sample={sample_idx} frame={frame_idx} "
@@ -782,7 +770,9 @@ def main() -> None:
                 "frame_cam2": str(frame2_map[frame_idx]),
                 "sam3d_cam1_kpt3d": str(sam3d_1_map[frame_idx]),
                 "sam3d_cam2_kpt3d": str(sam3d_2_map[frame_idx]),
-                "target_joint_ids": TARGET_IDS,
+                "target_joint_names": [
+                    FILTERED_KPTS_MAPPING[i] for i in range(len(FILTERED_KPTS_MAPPING))
+                ],
                 "dual2pose_ckpt": str(ckpt_path),
                 "p_left": left_3d.tolist(),
                 "p_right": right_3d.tolist(),
@@ -793,6 +783,7 @@ def main() -> None:
                 "rigid_alignment": rigid_diag,
                 "gt_character": gt_3d.tolist() if gt_3d is not None else None,
                 "mpjpe_to_gt": mpjpe_to_gt,
+                "fused_gt_metrics": fused_gt_metrics,
             }
             pred_json_path = pred_dir / f"frame_{frame_idx:06d}.json"
             with open(pred_json_path, "w", encoding="utf-8") as f:
@@ -808,7 +799,16 @@ def main() -> None:
                     "frame_index": int(frame_idx),
                     "vis_path": str(vis_path),
                     "pred_json_path": str(pred_json_path),
+                    "mpjpe_to_gt": mpjpe_to_gt,
                 }
+            )
+
+        if sample_mpjpe:
+            print(
+                "[SAMPLE] "
+                f"sample={sample_idx} tag={sample_tag} "
+                f"mean_mpjpe={float(np.mean(sample_mpjpe)):.4f} "
+                f"frames_with_gt={len(sample_mpjpe)}"
             )
 
     summary_path = run_out / "summary.json"

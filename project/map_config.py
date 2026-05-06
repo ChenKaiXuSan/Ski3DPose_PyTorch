@@ -239,6 +239,7 @@ def filter_unity_kpts(kpts: np.ndarray) -> np.ndarray:
     """
     arr = _normalize_kpts_array(kpts)
     selected = list(UNITY_MAPPING.keys())
+    # selected = [idx + 1 for idx in selected]  # Convert to 1-based indices
     if max(selected) >= arr.shape[0]:
         raise IndexError(
             f"UNITY_MAPPING index out of range for source shape {arr.shape}."

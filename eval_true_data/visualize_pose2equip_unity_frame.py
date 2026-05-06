@@ -23,10 +23,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from project.map_config import (
-    ID_TO_INDEX,
-    SAM3D_BODY_SKELETON_CONNECTIONS,
-    TARGET_IDS,
-    SAM3D_BODY_MAPPING,
+    FILTER_SKELETON_CONNECTIONS,
+    filter_unity_kpts,
+    filter_sam3d_body_kpts,
 )
 from project.models.pose2equip_net import Pose2EquipNet
 
@@ -47,8 +46,6 @@ EQUIP_SEGMENTS = [
     (4, 5),  # left pole
     (6, 7),  # right pole
 ]
-
-TARGET_JOINT_NAMES = [SAM3D_BODY_MAPPING[jid] for jid in TARGET_IDS]
 
 
 def _extract_float_token(token: str) -> Optional[float]:
@@ -178,87 +175,18 @@ def _mask_to_model_tensor(
     return x.to(device)
 
 
-def _to_model_joint_count(human_3d: np.ndarray, expected_joints: int) -> np.ndarray:
-    if human_3d.ndim != 2 or human_3d.shape[1] != 3:
-        raise ValueError(f"Expected human_3d shape [J,3], got {human_3d.shape}")
-    if human_3d.shape[0] == expected_joints:
-        return human_3d.astype(np.float32)
-
-    # Use a stable mapping policy here to avoid coupling to dataloader-specific
-    # index rules (single-view and dual-view loaders differ in candidate priority).
-    src_idx: List[int] = []
-    for jid in [jid for jid, _ in sorted(ID_TO_INDEX.items(), key=lambda kv: kv[1])]:
-        candidates = (jid, ID_TO_INDEX[jid])
-        mapped = next((c for c in candidates if 0 <= c < human_3d.shape[0]), None)
-        if mapped is None:
-            raise IndexError(
-                f"Target joint id {jid} cannot be mapped for source joint count {human_3d.shape[0]}."
-            )
-        src_idx.append(int(mapped))
-
-    filtered = human_3d[src_idx]
-    if filtered.shape[0] != expected_joints:
-        raise ValueError(
-            f"Joint count mismatch after filtering: expected {expected_joints}, got {filtered.shape[0]}"
-        )
-    return filtered.astype(np.float32)
-
-
-def _load_joint_name_to_index(path: Path) -> Optional[Dict[str, int]]:
-    """Load joint_names json and build name->index map.
-
-    Some metadata files are saved with BOM, so we use utf-8-sig.
-    """
-    if not path.exists() or not path.is_file():
-        return None
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return None
-
-    names: Optional[List[str]] = None
-    if isinstance(payload, dict):
-        raw = payload.get("joint_names")
-        if isinstance(raw, list):
-            names = [str(x) for x in raw]
-    elif isinstance(payload, list):
-        names = [str(x) for x in payload]
-
-    if not names:
-        return None
-
-    return {name: idx for idx, name in enumerate(names)}
-
-
-def _to_model_joint_count_from_names(
-    human_3d: np.ndarray,
-    expected_joints: int,
-    name_to_index: Optional[Dict[str, int]],
+def _ensure_joint_count(
+    human_3d: np.ndarray, expected_joints: int, source: str
 ) -> np.ndarray:
-    """Select 15 target joints by semantic names from GT character arrays."""
-    if human_3d.ndim != 2 or human_3d.shape[1] != 3:
-        raise ValueError(f"Expected human_3d shape [J,3], got {human_3d.shape}")
-
-    if name_to_index is None:
-        return _to_model_joint_count(human_3d, expected_joints)
-
-    missing = [name for name in TARGET_JOINT_NAMES if name not in name_to_index]
-    if missing:
-        raise KeyError(f"Missing target joint names in metadata: {missing}")
-
-    src_idx = [int(name_to_index[name]) for name in TARGET_JOINT_NAMES]
-    if max(src_idx) >= human_3d.shape[0]:
-        raise IndexError(
-            f"Joint index out of range for shape {human_3d.shape}: idx={src_idx}"
-        )
-
-    filtered = human_3d[src_idx]
-    if filtered.shape[0] != expected_joints:
+    """Validate filtered human joints shape against model expectation."""
+    arr = np.asarray(human_3d, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"Expected {source} shape [J,3], got {arr.shape}")
+    if arr.shape[0] != expected_joints:
         raise ValueError(
-            f"Joint count mismatch after name mapping: expected {expected_joints}, got {filtered.shape[0]}"
+            f"{source} joint count mismatch: expected {expected_joints}, got {arr.shape[0]}"
         )
-    return filtered.astype(np.float32)
+    return arr
 
 
 def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
@@ -266,12 +194,7 @@ def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
         human_3d[:, 0], human_3d[:, 1], human_3d[:, 2], s=10, c="tab:blue", alpha=0.7
     )
 
-    edges: List[Tuple[int, int]] = []
-    for a, b in SAM3D_BODY_SKELETON_CONNECTIONS:
-        if a in ID_TO_INDEX and b in ID_TO_INDEX:
-            edges.append((ID_TO_INDEX[a], ID_TO_INDEX[b]))
-
-    for i, j in edges:
+    for i, j in FILTER_SKELETON_CONNECTIONS:
         if i < human_3d.shape[0] and j < human_3d.shape[0]:
             ax.plot(
                 [human_3d[i, 0], human_3d[j, 0]],
@@ -499,6 +422,43 @@ def _compute_equipment_lengths(equip_obj: np.ndarray) -> Dict[str, float]:
     }
 
 
+def _compute_pred_gt_metrics(
+    pred_obj: np.ndarray, gt_obj: np.ndarray
+) -> Dict[str, float]:
+    """Compute point and length errors between predicted and GT equipment."""
+    pred = np.asarray(pred_obj, dtype=np.float32)
+    gt = np.asarray(gt_obj, dtype=np.float32)
+    if pred.shape != (8, 3) or gt.shape != (8, 3):
+        raise ValueError(
+            f"Expected pred/gt shapes [8,3], got pred={pred.shape}, gt={gt.shape}"
+        )
+
+    point_err = np.linalg.norm(pred - gt, axis=1)
+    pred_len = _compute_equipment_lengths(pred)
+    gt_len = _compute_equipment_lengths(gt)
+
+    return {
+        "mpjpe_equip": float(point_err.mean()),
+        "mae_equip_x": float(np.abs(pred[:, 0] - gt[:, 0]).mean()),
+        "mae_equip_y": float(np.abs(pred[:, 1] - gt[:, 1]).mean()),
+        "mae_equip_z": float(np.abs(pred[:, 2] - gt[:, 2]).mean()),
+        "mpjpe_ski": float(point_err[:4].mean()),
+        "mpjpe_pole": float(point_err[4:].mean()),
+        "left_ski_len_err": float(
+            abs(pred_len["left_ski_len"] - gt_len["left_ski_len"])
+        ),
+        "right_ski_len_err": float(
+            abs(pred_len["right_ski_len"] - gt_len["right_ski_len"])
+        ),
+        "left_pole_len_err": float(
+            abs(pred_len["left_pole_len"] - gt_len["left_pole_len"])
+        ),
+        "right_pole_len_err": float(
+            abs(pred_len["right_pole_len"] - gt_len["right_pole_len"])
+        ),
+    }
+
+
 def _draw_masks_2d(
     ax,
     frame_rgb: np.ndarray,
@@ -602,7 +562,7 @@ def _render_one_figure(
 
     # Panel 2: GT
     ax2 = fig.add_subplot(1, 4, 2, projection="3d")
-    _draw_human_skeleton_3d(ax2, gt_human)
+    _draw_human_skeleton_3d(ax2, human_gt_3d)
     if gt_segments is not None:
         _draw_gt_segments_by_config(ax2, gt_segments)
         ax2.legend(loc="upper right")
@@ -730,7 +690,7 @@ def main() -> None:
     parser.add_argument(
         "--max-samples",
         type=int,
-        default=5,
+        default=10,
         help="Max number of sample sequences to process",
     )
     parser.add_argument(
@@ -742,7 +702,7 @@ def main() -> None:
     parser.add_argument(
         "--frame-stride",
         type=int,
-        default=5,
+        default=3,
         help="Frame stride within one sample",
     )
     parser.add_argument(
@@ -779,7 +739,7 @@ def main() -> None:
     print(f"[INFO] Best ckpt: {ckpt_path}")
 
     model = _load_pose2equip_from_ckpt(ckpt_path, cfg, device)
-    expected_joints = int(getattr(model.pose_encoder, "num_joints", len(ID_TO_INDEX)))
+    expected_joints = int(getattr(model.pose_encoder, "num_joints", 15))
 
     split_items = _load_fold_items(cfg, int(args.fold), args.split)
     if len(split_items) == 0:
@@ -837,11 +797,7 @@ def main() -> None:
         gt_ski_map: Dict[int, Path] = {}
         gt_pole_map: Dict[int, Path] = {}
         gt_character_map: Dict[int, Path] = {}
-        gt_name_to_index: Optional[Dict[str, int]] = None
         kpt3d_dirs = sample_dict.get("kpt3d_dirs")
-        joint_names_path = sample_dict.get("joint_names_path")
-        if joint_names_path is not None:
-            gt_name_to_index = _load_joint_name_to_index(Path(str(joint_names_path)))
         if isinstance(kpt3d_dirs, dict):
             ski_dir = kpt3d_dirs.get("ski")
             pole_dir = kpt3d_dirs.get("pole")
@@ -874,6 +830,17 @@ def main() -> None:
         pred_dir = sample_out / "pred"
         vis_dir.mkdir(parents=True, exist_ok=True)
         pred_dir.mkdir(parents=True, exist_ok=True)
+        sample_txt_log_path = sample_out / "metrics_log.txt"
+        sample_txt_fp = sample_txt_log_path.open("w", encoding="utf-8")
+
+        def _sample_log(msg: str) -> None:
+            print(msg)
+            sample_txt_fp.write(msg + "\n")
+            sample_txt_fp.flush()
+
+        _sample_log(
+            f"[INFO] sample={sample_idx} tag={sample_tag} selected_frames={len(picked_indices)}"
+        )
         printed_offset_diagnosis = False
 
         for frame_idx in picked_indices:
@@ -882,25 +849,22 @@ def main() -> None:
 
             frame_rgb = _read_rgb(frame_path)
             human_3d_raw = np.asarray(np.load(sam3d_path), dtype=np.float32)
-            human_pred_3d = _to_model_joint_count(human_3d_raw, expected_joints)
+            human_pred_3d = _ensure_joint_count(
+                filter_sam3d_body_kpts(human_3d_raw),
+                expected_joints,
+                source="SAM3D human",
+            )
 
             human_gt_3d: Optional[np.ndarray] = None
             if frame_idx in gt_character_map:
                 human_gt_raw = np.asarray(
                     np.load(gt_character_map[frame_idx]), dtype=np.float32
                 )
-                try:
-                    human_gt_3d = _to_model_joint_count_from_names(
-                        human_gt_raw,
-                        expected_joints=expected_joints,
-                        name_to_index=gt_name_to_index,
-                    )
-                except Exception as e:
-                    # Keep backward compatibility for datasets without valid joint_names mapping.
-                    print(
-                        f"[WARN] GT name-based joint mapping failed at frame {frame_idx}, fallback to index mapping: {e}"
-                    )
-                    human_gt_3d = _to_model_joint_count(human_gt_raw, expected_joints)
+                human_gt_3d = _ensure_joint_count(
+                    filter_unity_kpts(human_gt_raw),
+                    expected_joints,
+                    source="Unity GT human",
+                )
 
             human_3d_t = torch.from_numpy(human_pred_3d).unsqueeze(0).to(device)
             frame_t = _frame_to_model_tensor(
@@ -941,7 +905,7 @@ def main() -> None:
             pred_lengths_dict = _compute_equipment_lengths(pred_obj)
 
             # Print pred length diagnostics
-            print(
+            _sample_log(
                 f"[PRED] sample={sample_idx} frame={frame_idx} "
                 f"ski_len=(L:{pred_lengths_dict['left_ski_len']:.4f}, R:{pred_lengths_dict['right_ski_len']:.4f}, avg:{pred_lengths_dict['avg_ski_len']:.4f}) "
                 f"pole_len=(L:{pred_lengths_dict['left_pole_len']:.4f}, R:{pred_lengths_dict['right_pole_len']:.4f}, avg:{pred_lengths_dict['avg_pole_len']:.4f})"
@@ -949,6 +913,7 @@ def main() -> None:
 
             gt_obj: Optional[np.ndarray] = None
             gt_segments: Optional[Dict[str, np.ndarray]] = None
+            pred_gt_metrics: Optional[Dict[str, float]] = None
             if frame_idx in gt_ski_map and frame_idx in gt_pole_map:
                 ski_gt_raw = np.asarray(
                     np.load(gt_ski_map[frame_idx]), dtype=np.float32
@@ -971,13 +936,26 @@ def main() -> None:
                     )
                     # Compute GT lengths
                     gt_lengths_dict = _compute_equipment_lengths(gt_obj)
-                    print(
+                    _sample_log(
                         f"[GT] sample={sample_idx} frame={frame_idx} "
                         f"ski_len=(L:{gt_lengths_dict['left_ski_len']:.4f}, R:{gt_lengths_dict['right_ski_len']:.4f}, avg:{gt_lengths_dict['avg_ski_len']:.4f}) "
                         f"pole_len=(L:{gt_lengths_dict['left_pole_len']:.4f}, R:{gt_lengths_dict['right_pole_len']:.4f}, avg:{gt_lengths_dict['avg_pole_len']:.4f})"
                     )
+
+                    pred_gt_metrics = _compute_pred_gt_metrics(
+                        pred_obj=pred_obj,
+                        gt_obj=gt_obj,
+                    )
+                    _sample_log(
+                        f"[METRIC] sample={sample_idx} frame={frame_idx} "
+                        f"mpjpe_equip={pred_gt_metrics['mpjpe_equip']:.4f} "
+                        f"(ski={pred_gt_metrics['mpjpe_ski']:.4f}, pole={pred_gt_metrics['mpjpe_pole']:.4f}) "
+                        f"mae_xyz=({pred_gt_metrics['mae_equip_x']:.4f}, {pred_gt_metrics['mae_equip_y']:.4f}, {pred_gt_metrics['mae_equip_z']:.4f}) "
+                        f"len_err=(skiL:{pred_gt_metrics['left_ski_len_err']:.4f}, skiR:{pred_gt_metrics['right_ski_len_err']:.4f}, "
+                        f"poleL:{pred_gt_metrics['left_pole_len_err']:.4f}, poleR:{pred_gt_metrics['right_pole_len_err']:.4f})"
+                    )
                 except Exception as e:
-                    print(
+                    _sample_log(
                         f"[WARN] failed to compose GT equipment at frame {frame_idx}: {e}"
                     )
 
@@ -1003,11 +981,11 @@ def main() -> None:
                     else {}
                 )
                 if sam_metrics:
-                    print(
+                    _sample_log(
                         f"[DIAG] sample={sample_idx} frame={frame_idx} anchor consistency with SAM human: {sam_metrics}"
                     )
                 if gt_metrics:
-                    print(
+                    _sample_log(
                         f"[DIAG] sample={sample_idx} frame={frame_idx} anchor consistency with GT human: {gt_metrics}"
                     )
                 printed_offset_diagnosis = True
@@ -1040,6 +1018,7 @@ def main() -> None:
                 "gt_equipment_lengths": (
                     _compute_equipment_lengths(gt_obj) if gt_obj is not None else None
                 ),
+                "pred_gt_metrics": pred_gt_metrics,
             }
             pred_json_path = pred_dir / f"frame_{frame_idx:06d}.json"
             with open(pred_json_path, "w", encoding="utf-8") as f:
@@ -1058,6 +1037,9 @@ def main() -> None:
                 }
             )
 
+        _sample_log(f"[DONE] sample={sample_idx} metrics_txt={sample_txt_log_path}")
+        sample_txt_fp.close()
+
     summary_path = run_out / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -1075,6 +1057,7 @@ def main() -> None:
     print(f"[DONE] Saved {len(summary_records)} frame predictions")
     print(f"[DONE] Output root: {run_out}")
     print(f"[DONE] Summary: {summary_path}")
+    print(f"[DONE] Metrics txt saved per sample under sample directories")
 
 
 if __name__ == "__main__":
