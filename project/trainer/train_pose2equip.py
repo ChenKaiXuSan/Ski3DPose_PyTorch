@@ -214,12 +214,10 @@ class Pose2EquipTrainer(LightningModule):
             dino_freeze=bool(getattr(args.pose2equip, "dino_freeze", True)),
             dino_image_size=int(getattr(args.pose2equip, "dino_image_size", 224)),
         )
-        self.lr = float(getattr(args.loss, "lr", 0.1))
+        self.lr = float(getattr(args.loss, "lr", 0.001))
         self.weight_decay = float(getattr(args.loss, "weight_decay", 0.01))
 
-        self.loss_w_attach = float(getattr(args.pose2equip, "loss_w_attach", 0.1))
-        self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
-        self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))
+        self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", 0.03))
         self.loss_w_len_abs = float(getattr(args.pose2equip, "loss_w_len_abs", 0.2))
         self.loss_w_dino_feat = float(getattr(args.pose2equip, "loss_w_dino_feat", 0.1))
         self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
@@ -300,8 +298,6 @@ class Pose2EquipTrainer(LightningModule):
         pred_obj = out["object_3d"]
 
         l3d = mpjpe(pred_obj, object_gt)
-        lcontact = attachment_loss(pred_obj, human_3d, self.idx)
-        llength = length_variance_loss(pred_obj)
         lsymmetry = symmetry_loss(pred_obj)
         l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
         gt_len = equipment_segment_lengths(object_gt)
@@ -317,13 +313,10 @@ class Pose2EquipTrainer(LightningModule):
         gt_pole_len_mean = 0.5 * (gt_len[:, 2].mean() + gt_len[:, 3].mean())
 
         # Final objective:
-        #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry
-        #       + w_len_abs * LlenAbs + w_dino_feat * LdinoFeat
+        #   L = L3D + w_sym * Lsymmetry + w_len_abs * LlenAbs + w_dino_feat * LdinoFeat
         # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
-            + self.loss_w_attach * lcontact
-            + self.loss_w_len * llength
             + self.loss_w_sym * lsymmetry
             + self.loss_w_len_abs * l_len_abs
             + self.loss_w_dino_feat * l_dino_feat
@@ -349,20 +342,6 @@ class Pose2EquipTrainer(LightningModule):
         self.log(
             f"{stage}/L3D",
             l3d,
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/Lcontact",
-            lcontact,
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/Llength",
-            llength,
             on_step=True,
             on_epoch=True,
             batch_size=batch_size,
@@ -430,11 +409,6 @@ class Pose2EquipTrainer(LightningModule):
             on_epoch=True,
             batch_size=batch_size,
         )
-
-        if stage == "train" and float(lcontact.detach().item()) < 1e-6:
-            logger.debug(
-                "Lcontact is near zero; current geometry anchors ski-center/pole-grip to ankle/wrist by design."
-            )
 
         if stage == "test":
             self.test_outputs.append(

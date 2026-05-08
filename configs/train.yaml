@@ -53,7 +53,7 @@ data:
   load_mask: false
 
   num_workers: 16
-  batch_size: 16
+  batch_size: 32
 
 model:
   backbone: pose2equip # dual2pose, pose2equip
@@ -76,8 +76,6 @@ pose2equip:
   dino_freeze: true
   dino_image_size: 224
 
-  loss_w_attach: 0.0   # always 0 by construction (anchor is hardcoded in build_equipment)
-  loss_w_len: 0.02
   loss_w_sym: 0.03
   loss_w_len_abs: 0.2
   loss_w_dino_feat: 0.1

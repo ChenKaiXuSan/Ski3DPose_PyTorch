@@ -22,12 +22,90 @@ Date      	By	Comments
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .stgcn import STGCN
 
 
 # =========================
 # Model
 # =========================
+class DinoFrameEncoder(nn.Module):
+    """封装 DINO 视觉骨干的图像预处理、前向推理和投影。
+
+    输入: [B, 3, H, W] float tensor (uint8 范围或已归一化均可)
+    输出: [B, out_dim] 特征向量
+    """
+
+    def __init__(
+        self,
+        model_name: str = "facebook/dinov2-base",
+        out_dim: int = 256,
+        image_size: int = 224,
+        freeze: bool = True,
+    ):
+        super().__init__()
+        self.image_size = int(image_size)
+        self.freeze = bool(freeze)
+
+        try:
+            from transformers import AutoImageProcessor, AutoModel
+        except ImportError as exc:
+            raise ImportError(
+                "DinoFrameEncoder requires transformers. "
+                "Please install transformers>=4.56.0."
+            ) from exc
+
+        _proc = AutoImageProcessor.from_pretrained(model_name)
+        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder.requires_grad_(not self.freeze)
+
+        model_hidden = int(
+            getattr(
+                self.encoder.config,
+                "hidden_size",
+                getattr(self.encoder.config, "projection_dim", out_dim),
+            )
+        )
+        self.proj = nn.Linear(model_hidden, out_dim)
+
+        mean = torch.tensor(_proc.image_mean, dtype=torch.float32).view(1, 3, 1, 1)
+        std = torch.tensor(_proc.image_std, dtype=torch.float32).view(1, 3, 1, 1)
+        self.register_buffer("_mean", mean, persistent=False)
+        self.register_buffer("_std", std, persistent=False)
+
+    def _preprocess(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float()
+        if x.max() > 1.5:
+            x = x / 255.0
+        if x.shape[-2] != self.image_size or x.shape[-1] != self.image_size:
+            x = F.interpolate(
+                x,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+        return (x - self._mean.to(x.dtype)) / self._std.to(x.dtype)
+
+    def forward(self, human_frame: torch.Tensor) -> torch.Tensor:
+        # human_frame: [B, 3, H, W]
+        if human_frame.ndim != 4:
+            raise ValueError(f"Expected [B,3,H,W], got {tuple(human_frame.shape)}")
+        if human_frame.shape[1] != 3:
+            raise ValueError(f"Expected 3 channels, got {human_frame.shape[1]}")
+
+        x = self._preprocess(human_frame)
+
+        context = torch.no_grad() if self.freeze else torch.enable_grad()
+        with context:
+            outputs = self.encoder(pixel_values=x)
+            if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+                feat = outputs.pooler_output
+            else:
+                feat = outputs.last_hidden_state[:, 0]
+
+        return self.proj(feat)
+
+
 class PoseEncoder(nn.Module):
     """
     ST-GCN-based pose encoder that takes in 3D joint positions and outputs a global feature vector.
@@ -103,26 +181,12 @@ class Pose2EquipNet(nn.Module):
             target_skeleton_connections_idx=target_skeleton_connections_idx,
         )
 
-        try:
-            from transformers import AutoImageProcessor, AutoModel
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError(
-                "Pose2EquipNet with DINO backbone requires transformers. "
-                "Please install transformers>=4.56.0."
-            ) from exc
-
-        self.dino_processor = AutoImageProcessor.from_pretrained(self.dino_model_name)
-        self.frame_encoder = AutoModel.from_pretrained(self.dino_model_name)
-        self.frame_encoder.requires_grad_(not self.dino_freeze)
-
-        model_hidden = int(
-            getattr(
-                self.frame_encoder.config,
-                "hidden_size",
-                getattr(self.frame_encoder.config, "projection_dim", hidden_dim),
-            )
+        self.frame_encoder = DinoFrameEncoder(
+            model_name=self.dino_model_name,
+            out_dim=hidden_dim,
+            image_size=self.dino_image_size,
+            freeze=self.dino_freeze,
         )
-        self.frame_proj = nn.Linear(model_hidden, hidden_dim)
 
         self.fuse = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
@@ -135,51 +199,18 @@ class Pose2EquipNet(nn.Module):
         self.len_head = nn.Linear(hidden_dim, 4)
         self.dino_len_head = nn.Linear(hidden_dim, 4)
 
-    def _encode_frame_branch(self, human_frame: torch.Tensor) -> torch.Tensor:
-        # human_frame: [B, C, H, W]
-        if human_frame.ndim != 4:
-            raise ValueError(
-                f"Expected human_frame shape [B,C,H,W], got {tuple(human_frame.shape)}"
-            )
-
-        if human_frame.shape[1] != 3:
-            raise ValueError(
-                f"Expected human_frame channels to be 3 for DINO processor, got {human_frame.shape[1]}"
-            )
-
-        processor_inputs = self.dino_processor(
-            images=human_frame,
-            return_tensors="pt",
-        )
-        x = processor_inputs["pixel_values"].to(human_frame.device)
-
-        context = torch.no_grad() if self.dino_freeze else torch.enable_grad()
-        with context:
-            outputs = self.frame_encoder(pixel_values=x)
-            if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
-                frame_feat = outputs.pooler_output
-            else:
-                frame_feat = outputs.last_hidden_state[:, 0]
-
-        frame_feat = self.frame_proj(frame_feat)
-        return frame_feat
-
     def forward(
         self,
         human_3d: torch.Tensor,
         human_frame: torch.Tensor,
     ):
         # human_3d: [B, J, 3]
-        # human_frame: [B, C, H, W]
+        # human_frame: [B, 3, H, W]
 
         equip_feat = self.pose_encoder(human_3d)
         b, _, _ = human_3d.shape
 
-        frame_feat = self._encode_frame_branch(human_frame=human_frame)
-        if frame_feat.shape[0] != b:
-            raise ValueError(
-                f"Batch mismatch between pose and frame: {b} vs {frame_feat.shape[0]}"
-            )
+        frame_feat = self.frame_encoder(human_frame)
 
         # Auxiliary branch: supervise DINO features directly with equipment lengths.
         dino_lengths = self.dino_len_head(frame_feat).reshape(b, 4, 1)
