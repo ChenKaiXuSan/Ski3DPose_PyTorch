@@ -83,64 +83,6 @@ def attachment_loss(pred_obj, human_3d, idx):
     return loss
 
 
-def _bbox_diag_from_mask(mask_2d: torch.Tensor) -> torch.Tensor:
-    """Return bbox diagonal length for one binary mask tensor [H,W]."""
-    ys, xs = torch.where(mask_2d > 0.5)
-    if ys.numel() == 0:
-        return mask_2d.new_tensor(0.0)
-    h = (ys.max() - ys.min() + 1).float()
-    w = (xs.max() - xs.min() + 1).float()
-    return torch.sqrt(h * h + w * w)
-
-
-def mask_length_ratio_loss(
-    pred_obj: torch.Tensor,
-    ski_mask: torch.Tensor | None,
-    ski_pole_mask: torch.Tensor | None,
-) -> torch.Tensor:
-    """Constrain 3D ski/pole length ratio with 2D mask extent ratio.
-
-    We only use ratio (not absolute scale) to avoid camera-scale ambiguity.
-    """
-    if ski_mask is None or ski_pole_mask is None:
-        return pred_obj.new_tensor(0.0)
-    if ski_mask.ndim != 4 or ski_pole_mask.ndim != 4:
-        return pred_obj.new_tensor(0.0)
-
-    # 3D predicted lengths [B]
-    pred_ski_len = 0.5 * (
-        torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
-        + torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
-    )
-    pred_pole_len = 0.5 * (
-        torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
-        + torch.norm(pred_obj[:, 6] - pred_obj[:, 7], dim=-1)
-    )
-
-    bsz = pred_obj.shape[0]
-    losses = []
-    eps = 1e-6
-    for b in range(bsz):
-        ski_m = ski_mask[b, 0]
-        ski_pole_m = ski_pole_mask[b, 0]
-        pole_only_m = torch.clamp(ski_pole_m - ski_m, min=0.0)
-
-        ski_extent = _bbox_diag_from_mask(ski_m)
-        pole_extent = _bbox_diag_from_mask(pole_only_m)
-        if ski_extent <= 0 or pole_extent <= 0:
-            continue
-
-        pred_ratio = pred_ski_len[b] / (pred_pole_len[b] + eps)
-        mask_ratio = ski_extent / (pole_extent + eps)
-        losses.append(
-            torch.abs(torch.log(pred_ratio + eps) - torch.log(mask_ratio + eps))
-        )
-
-    if len(losses) == 0:
-        return pred_obj.new_tensor(0.0)
-    return torch.stack(losses).mean()
-
-
 def equipment_segment_lengths(obj: torch.Tensor) -> torch.Tensor:
     """Return 4 segment lengths from equipment keypoints.
 
@@ -262,6 +204,15 @@ class Pose2EquipTrainer(LightningModule):
             left_wrist_idx=args.pose2equip.left_wrist_idx,
             right_wrist_idx=args.pose2equip.right_wrist_idx,
             target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
+            dino_model_name=str(
+                getattr(
+                    args.pose2equip,
+                    "dino_model_name",
+                    "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+                )
+            ),
+            dino_freeze=bool(getattr(args.pose2equip, "dino_freeze", True)),
+            dino_image_size=int(getattr(args.pose2equip, "dino_image_size", 224)),
         )
         self.lr = float(getattr(args.loss, "lr", 0.1))
         self.weight_decay = float(getattr(args.loss, "weight_decay", 0.01))
@@ -269,8 +220,8 @@ class Pose2EquipTrainer(LightningModule):
         self.loss_w_attach = float(getattr(args.pose2equip, "loss_w_attach", 0.1))
         self.loss_w_len = float(getattr(args.pose2equip, "loss_w_len", 0.05))
         self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", self.loss_w_len))
-        self.loss_w_mask_len = float(getattr(args.pose2equip, "loss_w_mask_len", 0.05))
         self.loss_w_len_abs = float(getattr(args.pose2equip, "loss_w_len_abs", 0.2))
+        self.loss_w_dino_feat = float(getattr(args.pose2equip, "loss_w_dino_feat", 0.1))
         self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
 
         # GT point reorder for object_3d target (8 points):
@@ -313,15 +264,8 @@ class Pose2EquipTrainer(LightningModule):
         # 只用cam 1 的结果进行训练
         human_3d = batch["kpt3d_sam"]["character_cam1"].float()  # [B, t, J, 3]
         human_frame = None
-        pole_mask = None
-        ski_mask = None
         if isinstance(batch.get("frames"), dict) and "cam1" in batch["frames"]:
             human_frame = batch["frames"]["cam1"].float()  # b, c, t, h, w
-        if isinstance(batch.get("masks"), dict):
-            if "ski_pole" in batch["masks"]:
-                pole_mask = batch["masks"]["ski_pole"].float()  # b, 1, t, h, w
-            if "ski" in batch["masks"]:
-                ski_mask = batch["masks"]["ski"].float()  # b, 1, t, h, w
 
         # GT fron Unity
         _gt = batch["kpt3d_gt"]
@@ -346,36 +290,12 @@ class Pose2EquipTrainer(LightningModule):
                     human_frame.shape[3],
                     human_frame.shape[4],
                 )
-            if pole_mask is not None:
-                if pole_mask.ndim != 5:
-                    raise ValueError(
-                        f"Expected pole_mask shape [B,1,T,H,W], got {tuple(pole_mask.shape)}"
-                    )
-                pole_mask = pole_mask.permute(0, 2, 1, 3, 4).reshape(
-                    bsz * t_steps,
-                    pole_mask.shape[1],
-                    pole_mask.shape[3],
-                    pole_mask.shape[4],
-                )
-            if ski_mask is not None:
-                if ski_mask.ndim != 5:
-                    raise ValueError(
-                        f"Expected ski_mask shape [B,1,T,H,W], got {tuple(ski_mask.shape)}"
-                    )
-                ski_mask = ski_mask.permute(0, 2, 1, 3, 4).reshape(
-                    bsz * t_steps,
-                    ski_mask.shape[1],
-                    ski_mask.shape[3],
-                    ski_mask.shape[4],
-                )
 
         object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
 
         out = self.model(
             human_3d,
             human_frame=human_frame,
-            pole_mask=pole_mask,
-            ski_mask=ski_mask,
         )
         pred_obj = out["object_3d"]
 
@@ -383,14 +303,13 @@ class Pose2EquipTrainer(LightningModule):
         lcontact = attachment_loss(pred_obj, human_3d, self.idx)
         llength = length_variance_loss(pred_obj)
         lsymmetry = symmetry_loss(pred_obj)
-        lmask_len = mask_length_ratio_loss(
-            pred_obj=pred_obj,
-            ski_mask=ski_mask,
-            ski_pole_mask=pole_mask,
-        )
         l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
-        pred_len = equipment_segment_lengths(pred_obj)
         gt_len = equipment_segment_lengths(object_gt)
+        l_dino_feat = torch.nn.functional.smooth_l1_loss(
+            out["dino_lengths"].squeeze(-1),
+            gt_len,
+        )
+        pred_len = equipment_segment_lengths(pred_obj)
 
         pred_ski_len_mean = 0.5 * (pred_len[:, 0].mean() + pred_len[:, 1].mean())
         pred_pole_len_mean = 0.5 * (pred_len[:, 2].mean() + pred_len[:, 3].mean())
@@ -399,15 +318,15 @@ class Pose2EquipTrainer(LightningModule):
 
         # Final objective:
         #   L = L3D + w_attach * Lcontact + w_len * Llength + w_sym * Lsymmetry
-        #       + w_mask_len * LmaskLen + w_len_abs * LlenAbs
+        #       + w_len_abs * LlenAbs + w_dino_feat * LdinoFeat
         # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
             + self.loss_w_attach * lcontact
             + self.loss_w_len * llength
             + self.loss_w_sym * lsymmetry
-            + self.loss_w_mask_len * lmask_len
             + self.loss_w_len_abs * l_len_abs
+            + self.loss_w_dino_feat * l_dino_feat
         )
 
         batch_size = human_3d.shape[0]
@@ -456,15 +375,15 @@ class Pose2EquipTrainer(LightningModule):
             batch_size=batch_size,
         )
         self.log(
-            f"{stage}/Lmask_len",
-            lmask_len,
+            f"{stage}/Llen_abs",
+            l_len_abs,
             on_step=True,
             on_epoch=True,
             batch_size=batch_size,
         )
         self.log(
-            f"{stage}/Llen_abs",
-            l_len_abs,
+            f"{stage}/Ldino_feat",
+            l_dino_feat,
             on_step=True,
             on_epoch=True,
             batch_size=batch_size,

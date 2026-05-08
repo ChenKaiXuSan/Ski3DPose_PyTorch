@@ -22,7 +22,6 @@ Date      	By	Comments
 
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18, ResNet18_Weights
 from .stgcn import STGCN
 
 
@@ -42,9 +41,8 @@ class PoseEncoder(nn.Module):
     ):
         super().__init__()
         self.num_joints = int(num_joints)
-        edges = self._normalize_edges(target_skeleton_connections_idx, self.num_joints)
-        if edges is None:
-            edges = self._default_edges(self.num_joints)
+        if target_skeleton_connections_idx is not None:
+            edges = target_skeleton_connections_idx
 
         self.stgcn = STGCN(
             num_joints=self.num_joints,
@@ -54,72 +52,6 @@ class PoseEncoder(nn.Module):
             dropout=0.1,
         )
         self.dropout = nn.Dropout(p=0.1)
-
-    @staticmethod
-    def _default_edges(num_joints: int):
-        if num_joints == 15:
-            return [
-                (0, 1),
-                (1, 2),
-                (2, 3),
-                (1, 4),
-                (4, 5),
-                (5, 6),
-                (1, 7),
-                (7, 8),
-                (8, 9),
-                (7, 10),
-                (10, 11),
-                (11, 12),
-                (7, 13),
-                (13, 14),
-            ]
-        # Fallback: chain topology for unknown joint count.
-        return [(i, i + 1) for i in range(num_joints - 1)]
-
-    @staticmethod
-    def _normalize_edges(edges, num_joints: int):
-        """Normalize edge config to List[Tuple[int, int]].
-
-        Supports:
-        - [[u, v], [u, v], ...]
-        - [(u, v), (u, v), ...]
-        - [u0, v0, u1, v1, ...]
-        """
-        if edges is None:
-            return None
-
-        normalized = []
-        if (
-            isinstance(edges, (list, tuple))
-            and len(edges) > 0
-            and isinstance(edges[0], (list, tuple))
-        ):
-            for pair in edges:
-                if len(pair) != 2:
-                    raise ValueError(f"Invalid edge pair: {pair}")
-                u, v = int(pair[0]), int(pair[1])
-                if not (0 <= u < num_joints and 0 <= v < num_joints):
-                    raise ValueError(
-                        f"Edge out of range: ({u},{v}) for num_joints={num_joints}"
-                    )
-                normalized.append((u, v))
-            return normalized
-
-        if isinstance(edges, (list, tuple)) and len(edges) % 2 == 0:
-            vals = [int(x) for x in edges]
-            for i in range(0, len(vals), 2):
-                u, v = vals[i], vals[i + 1]
-                if not (0 <= u < num_joints and 0 <= v < num_joints):
-                    raise ValueError(
-                        f"Edge out of range: ({u},{v}) for num_joints={num_joints}"
-                    )
-                normalized.append((u, v))
-            return normalized
-
-        raise ValueError(
-            "target_skeleton_connections_idx must be list of pairs or flattened even-length list"
-        )
 
     def forward(self, x):
         # x: [B, J, 3] or [B, T, J, 3]
@@ -152,12 +84,18 @@ class Pose2EquipNet(nn.Module):
         left_wrist_idx=41,
         right_wrist_idx=62,
         target_skeleton_connections_idx=None,
+        dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+        dino_freeze: bool = True,
+        dino_image_size: int = 224,
     ):
         super().__init__()
         self.left_ankle_idx = left_ankle_idx
         self.right_ankle_idx = right_ankle_idx
         self.left_wrist_idx = left_wrist_idx
         self.right_wrist_idx = right_wrist_idx
+        self.dino_model_name = str(dino_model_name)
+        self.dino_freeze = bool(dino_freeze)
+        self.dino_image_size = int(dino_image_size)
 
         self.pose_encoder = PoseEncoder(
             num_joints=num_joints,
@@ -165,23 +103,26 @@ class Pose2EquipNet(nn.Module):
             target_skeleton_connections_idx=target_skeleton_connections_idx,
         )
 
-        # Frame branch (RGB): pretrained visual prior.
-        _resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
-        self.frame_encoder = nn.Sequential(
-            *list(_resnet.children())[:-1]
-        )  # output: [B, 512, 1, 1]
-        self.frame_proj = nn.Linear(512, hidden_dim)
+        try:
+            from transformers import AutoImageProcessor, AutoModel
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "Pose2EquipNet with DINO backbone requires transformers. "
+                "Please install transformers>=4.56.0."
+            ) from exc
 
-        # Mask branch: independent backbone (separate parameters from frame branch).
-        _mask_resnet = resnet18(weights=None)
-        self.mask_encoder = nn.Sequential(*list(_mask_resnet.children())[:-1])
-        self.mask_proj = nn.Linear(512, hidden_dim)
+        self.dino_processor = AutoImageProcessor.from_pretrained(self.dino_model_name)
+        self.frame_encoder = AutoModel.from_pretrained(self.dino_model_name)
+        self.frame_encoder.requires_grad_(not self.dino_freeze)
 
-        # Learnable fusion between frame/mask branch features.
-        self.visual_fuse = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
+        model_hidden = int(
+            getattr(
+                self.frame_encoder.config,
+                "hidden_size",
+                getattr(self.frame_encoder.config, "projection_dim", hidden_dim),
+            )
         )
+        self.frame_proj = nn.Linear(model_hidden, hidden_dim)
 
         self.fuse = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
@@ -192,6 +133,7 @@ class Pose2EquipNet(nn.Module):
         # 4 directions: left_ski, right_ski, left_pole, right_pole
         self.dir_head = nn.Linear(hidden_dim, 4 * 3)
         self.len_head = nn.Linear(hidden_dim, 4)
+        self.dino_len_head = nn.Linear(hidden_dim, 4)
 
     def _encode_frame_branch(self, human_frame: torch.Tensor) -> torch.Tensor:
         # human_frame: [B, C, H, W]
@@ -200,77 +142,50 @@ class Pose2EquipNet(nn.Module):
                 f"Expected human_frame shape [B,C,H,W], got {tuple(human_frame.shape)}"
             )
 
-        if human_frame.shape[1] == 1:
-            human_frame = human_frame.repeat(1, 3, 1, 1)
-        elif human_frame.shape[1] != 3:
+        if human_frame.shape[1] != 3:
             raise ValueError(
-                f"Expected human_frame channels in (1,3), got {human_frame.shape[1]}"
+                f"Expected human_frame channels to be 3 for DINO processor, got {human_frame.shape[1]}"
             )
 
-        frame_feat = self.frame_encoder(human_frame).flatten(1)
+        processor_inputs = self.dino_processor(
+            images=human_frame,
+            return_tensors="pt",
+        )
+        x = processor_inputs["pixel_values"].to(human_frame.device)
+
+        context = torch.no_grad() if self.dino_freeze else torch.enable_grad()
+        with context:
+            outputs = self.frame_encoder(pixel_values=x)
+            if hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+                frame_feat = outputs.pooler_output
+            else:
+                frame_feat = outputs.last_hidden_state[:, 0]
+
         frame_feat = self.frame_proj(frame_feat)
         return frame_feat
-
-    @staticmethod
-    def _validate_mask_shape(mask: torch.Tensor, name: str, b: int, h: int, w: int):
-        if mask.ndim != 4 or mask.shape[1] != 1:
-            raise ValueError(f"Expected {name} shape [B,1,H,W], got {tuple(mask.shape)}")
-        if mask.shape[0] != b:
-            raise ValueError(f"{name}/frame batch mismatch: frame={b}, {name}={mask.shape[0]}")
-        if mask.shape[-2:] != (h, w):
-            raise ValueError(
-                f"{name}/frame spatial mismatch: frame={(h, w)}, {name}={tuple(mask.shape[-2:])}"
-            )
-
-    def _encode_mask_branch(
-        self,
-        pole_mask: torch.Tensor | None,
-        ski_mask: torch.Tensor | None,
-        ref_frame: torch.Tensor,
-    ) -> torch.Tensor:
-        # Build a dedicated mask visual branch from [pole_mask, ski_mask].
-        b, _, h, w = ref_frame.shape
-        if pole_mask is None:
-            pole_mask = ref_frame.new_zeros((b, 1, h, w))
-        if ski_mask is None:
-            ski_mask = ref_frame.new_zeros((b, 1, h, w))
-
-        self._validate_mask_shape(pole_mask, "pole_mask", b, h, w)
-        self._validate_mask_shape(ski_mask, "ski_mask", b, h, w)
-
-        # 2-channel masks -> pseudo RGB for the shared ResNet image encoder.
-        zeros = ref_frame.new_zeros((b, 1, h, w))
-        mask_rgb = torch.cat([pole_mask, ski_mask, zeros], dim=1)
-        mask_feat = self.mask_encoder(mask_rgb).flatten(1)
-        mask_feat = self.mask_proj(mask_feat)
-        return mask_feat
 
     def forward(
         self,
         human_3d: torch.Tensor,
         human_frame: torch.Tensor,
-        pole_mask: torch.Tensor | None = None,
-        ski_mask: torch.Tensor | None = None,
     ):
         # human_3d: [B, J, 3]
         # human_frame: [B, C, H, W]
-        # pole_mask/ski_mask: [B, 1, H, W]
-        
+
         equip_feat = self.pose_encoder(human_3d)
         b, _, _ = human_3d.shape
 
         frame_feat = self._encode_frame_branch(human_frame=human_frame)
-        mask_feat = self._encode_mask_branch(
-            pole_mask=pole_mask,
-            ski_mask=ski_mask,
-            ref_frame=human_frame,
-        )
-        visual_feat = self.visual_fuse(torch.cat([frame_feat, mask_feat], dim=-1))
         if frame_feat.shape[0] != b:
             raise ValueError(
                 f"Batch mismatch between pose and frame: {b} vs {frame_feat.shape[0]}"
             )
-        equip_feat = self.fuse(torch.cat([equip_feat, visual_feat], dim=-1))
+
+        # Auxiliary branch: supervise DINO features directly with equipment lengths.
+        dino_lengths = self.dino_len_head(frame_feat).reshape(b, 4, 1)
+        dino_lengths = torch.nn.functional.softplus(dino_lengths) + 1e-4
+
+        equip_feat = self.fuse(torch.cat([equip_feat, frame_feat], dim=-1))
 
         directions = self.dir_head(equip_feat).reshape(b, 4, 3)
         directions = torch.nn.functional.normalize(directions, dim=-1)
@@ -284,6 +199,7 @@ class Pose2EquipNet(nn.Module):
             "object_3d": pred_obj,
             "directions": directions,
             "lengths": lengths,
+            "dino_lengths": dino_lengths,
         }
 
     def build_equipment(self, human_3d, directions, lengths):

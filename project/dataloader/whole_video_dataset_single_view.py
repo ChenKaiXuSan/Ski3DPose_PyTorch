@@ -82,6 +82,7 @@ class LabeledUnityDataset(Dataset):
             raise ValueError(
                 "At least one of load_frames/load_2d_kpt/load_3d_kpt/load_mask must be enabled."
             )
+
     def __len__(self) -> int:
         return len(self._index_mapping)
 
@@ -459,6 +460,7 @@ class LabeledUnityDataset(Dataset):
 
     def _load_single_variant_keypoints(
         self,
+        variant: str,
         cam1_kpt2d_dir: Path,
         kpt3d_dir: Path,
         sam3d_cam1_kpt2d_dir: Path,
@@ -509,38 +511,62 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt2d: List[torch.Tensor] = []
         sam3d_cam1_kpt3d: List[torch.Tensor] = []
 
+        is_character_variant = variant == "character"
+
         for idx in common_idx:
             if self._load_2d_kpt:
                 cam1_2d = np.asarray(np.load(cam1_kpt2d_map[idx]), dtype=np.float32)
-
-                unity_gt_cam1_kpt2d.append(torch.from_numpy(filter_unity_kpts(cam1_2d)))
+                cam1_2d_filtered = (
+                    filter_unity_kpts(cam1_2d) if is_character_variant else cam1_2d
+                )
+                unity_gt_cam1_kpt2d.append(torch.from_numpy(cam1_2d_filtered))
 
             if self._load_3d_kpt:
                 gt_3d = np.asarray(np.load(kpt3d_map[idx]), dtype=np.float32)
-
-                unity_gt_kpt3d.append(torch.from_numpy(filter_unity_kpts(gt_3d)))
+                gt_3d_filtered = (
+                    filter_unity_kpts(gt_3d) if is_character_variant else gt_3d
+                )
+                unity_gt_kpt3d.append(torch.from_numpy(gt_3d_filtered))
 
             if self._load_2d_kpt:
                 sam1_2d = np.asarray(
                     np.load(sam3d_cam1_kpt2d_map[idx]), dtype=np.float32
                 )
 
-                sam3d_cam1_kpt2d.append(torch.from_numpy(filter_sam3d_body_kpts(sam1_2d)))
+                sam3d_cam1_kpt2d.append(
+                    torch.from_numpy(filter_sam3d_body_kpts(sam1_2d))
+                )
 
             if self._load_3d_kpt:
                 sam1_3d = np.asarray(
                     np.load(sam3d_cam1_kpt3d_map[idx]), dtype=np.float32
                 )
 
-                sam3d_cam1_kpt3d.append(torch.from_numpy(filter_sam3d_body_kpts(sam1_3d)))
+                sam3d_cam1_kpt3d.append(
+                    torch.from_numpy(filter_sam3d_body_kpts(sam1_3d))
+                )
 
-        unity_gt_cam1_kpt2d_t = torch.stack(unity_gt_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
-        unity_gt_kpt3d_t = torch.stack(unity_gt_kpt3d, dim=0) if self._load_3d_kpt else None
-        sam3d_cam1_kpt2d_t = torch.stack(sam3d_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
-        sam3d_cam1_kpt3d_t = torch.stack(sam3d_cam1_kpt3d, dim=0) if self._load_3d_kpt else None
+        unity_gt_cam1_kpt2d_t = (
+            torch.stack(unity_gt_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
+        )
+        unity_gt_kpt3d_t = (
+            torch.stack(unity_gt_kpt3d, dim=0) if self._load_3d_kpt else None
+        )
+        sam3d_cam1_kpt2d_t = (
+            torch.stack(sam3d_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
+        )
+        sam3d_cam1_kpt3d_t = (
+            torch.stack(sam3d_cam1_kpt3d, dim=0) if self._load_3d_kpt else None
+        )
         frame_indices_t = torch.tensor(common_idx, dtype=torch.long)
 
-        return unity_gt_cam1_kpt2d_t, unity_gt_kpt3d_t, sam3d_cam1_kpt2d_t, sam3d_cam1_kpt3d_t, frame_indices_t
+        return (
+            unity_gt_cam1_kpt2d_t,
+            unity_gt_kpt3d_t,
+            sam3d_cam1_kpt2d_t,
+            sam3d_cam1_kpt3d_t,
+            frame_indices_t,
+        )
 
     def _load_single_view_modalities(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Load aligned modalities for one single-view sample.
@@ -838,16 +864,21 @@ class LabeledUnityDataset(Dataset):
                 cam1_kpt2d_dir_variant = cam1_kpt2d_dir
                 kpt3d_dir_variant = kpt3d_dir
 
-            unity_gt_cam1_kpt2d_t, unity_gt_kpt3d_t, sam3d_cam1_kpt2d_t, sam3d_cam1_kpt3d_t, frame_indices_t = (
-                self._load_single_variant_keypoints(
-                    cam1_kpt2d_dir=cam1_kpt2d_dir_variant,
-                    kpt3d_dir=kpt3d_dir_variant,
-                    sam3d_cam1_kpt2d_dir=sam3d_cam1_kpt2d_dir,
-                    sam3d_cam1_kpt3d_dir=sam3d_cam1_kpt3d_dir,
-                    common_idx=selected_common_idx,
-                    sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map,
-                    sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map,
-                )
+            (
+                unity_gt_cam1_kpt2d_t,
+                unity_gt_kpt3d_t,
+                sam3d_cam1_kpt2d_t,
+                sam3d_cam1_kpt3d_t,
+                frame_indices_t,
+            ) = self._load_single_variant_keypoints(
+                variant=variant,
+                cam1_kpt2d_dir=cam1_kpt2d_dir_variant,
+                kpt3d_dir=kpt3d_dir_variant,
+                sam3d_cam1_kpt2d_dir=sam3d_cam1_kpt2d_dir,
+                sam3d_cam1_kpt3d_dir=sam3d_cam1_kpt3d_dir,
+                common_idx=selected_common_idx,
+                sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map,
+                sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map,
             )
 
             variant_kpts[variant] = {
@@ -887,7 +918,9 @@ class LabeledUnityDataset(Dataset):
             # GT: all variants (character, pole, ski)
             for v in variants:
                 if variant_kpts[v]["unity_gt_cam1_kpt2d"] is not None:
-                    out["kpt2d_gt"][f"{v}_cam1"] = variant_kpts[v]["unity_gt_cam1_kpt2d"]
+                    out["kpt2d_gt"][f"{v}_cam1"] = variant_kpts[v][
+                        "unity_gt_cam1_kpt2d"
+                    ]
 
             # SAM: character only (fallback to first variant when character is unavailable)
             if variant_kpts[sam_variant_key]["sam3d_cam1_kpt2d"] is not None:

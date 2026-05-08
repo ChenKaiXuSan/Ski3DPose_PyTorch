@@ -7,7 +7,7 @@ hydra:
     subdir: ${experiment}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 loss:
-  lr: 0.1
+  lr: 0.001
   weight_decay: 0.01
 
 cross_validation:
@@ -50,10 +50,10 @@ data:
   load_frames: true # whether to load video frames
   load_2d_kpt: false # whether to load 2d keypoints
   load_3d_kpt: true
-  load_mask: true
+  load_mask: false
 
   num_workers: 16
-  batch_size: 8
+  batch_size: 16
 
 model:
   backbone: pose2equip # dual2pose, pose2equip
@@ -72,12 +72,15 @@ train:
 # Used only when model.backbone=pose2equip
 pose2equip:
   num_joints: 15
+  dino_model_name: facebook/dinov2-base
+  dino_freeze: true
+  dino_image_size: 224
 
-  loss_w_attach: 0.1
+  loss_w_attach: 0.0   # always 0 by construction (anchor is hardcoded in build_equipment)
   loss_w_len: 0.02
   loss_w_sym: 0.03
-  loss_w_mask_len: 0.05
   loss_w_len_abs: 0.2
+  loss_w_dino_feat: 0.1
 
   # 这里应该是过滤之后的idx
   left_ankle_idx: 10
@@ -101,10 +104,10 @@ dual2pose:
   n_layers: 4
   use_conf: true
   predict_logvar: false
-  
+
   # frame branch
   use_dino_features: false
-  dino_model_name: facebook/dinov3-convnext-tiny-pretrain-lvd1689m
+  dino_model_name: facebook/dinov2-base
   dino_freeze: true
   dino_image_size: 224
   dino_feature_dim: 768

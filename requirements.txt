@@ -16,3 +16,4 @@ matplotlib
 
 tensorboard
 rich
+transformers>=4.56.0

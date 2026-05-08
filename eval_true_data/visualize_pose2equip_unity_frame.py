@@ -662,7 +662,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-02/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-06/fold_0/checkpoints/fold_0"
         ),
         help="Checkpoint directory containing *.ckpt",
     )
