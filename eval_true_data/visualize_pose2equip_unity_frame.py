@@ -149,32 +149,6 @@ def _frame_to_model_tensor(
     return x.to(device)
 
 
-def _load_single_mask_npz(npz_path: Path) -> np.ndarray:
-    """Load one mask npz and return merged binary mask with shape [1,H,W]."""
-    data = np.load(npz_path, allow_pickle=True)
-    if "masks" not in data.files:
-        raise KeyError(f"'masks' not found in {npz_path}")
-    masks = np.asarray(data["masks"])
-    if masks.ndim == 2:
-        masks = masks[None, ...]
-    if masks.ndim != 3:
-        raise ValueError(f"Expected masks ndim=3 after normalize, got {masks.shape}")
-    if masks.shape[0] == 0:
-        merged = np.zeros(masks.shape[-2:], dtype=np.float32)
-    else:
-        merged = np.any(masks > 0, axis=0).astype(np.float32, copy=False)
-    return merged[None, ...]
-
-
-def _mask_to_model_tensor(
-    mask_chw: np.ndarray, image_size: int, device: torch.device
-) -> torch.Tensor:
-    """Convert [1,H,W] mask to [1,1,image_size,image_size] float tensor."""
-    x = torch.from_numpy(np.ascontiguousarray(mask_chw, dtype=np.float32)).unsqueeze(0)
-    x = F.interpolate(x, size=(image_size, image_size), mode="nearest")
-    return x.to(device)
-
-
 def _ensure_joint_count(
     human_3d: np.ndarray, expected_joints: int, source: str
 ) -> np.ndarray:
@@ -187,6 +161,26 @@ def _ensure_joint_count(
             f"{source} joint count mismatch: expected {expected_joints}, got {arr.shape[0]}"
         )
     return arr
+
+
+def _rotate_x_180_deg(points: np.ndarray) -> np.ndarray:
+    """Rotate 3D points around X-axis by 180 degrees.
+
+    Input/Output shape: [N, 3]
+    Transform:
+      x' = x
+      y' = -y
+      z' = -z
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"Expected shape [N,3], got {pts.shape}")
+    out = pts.copy()
+    out[:, 0] = pts[:, 0]
+    out[:, 1] = -pts[:, 1]
+    out[:, 2] = -pts[:, 2]
+
+    return out
 
 
 def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
@@ -459,76 +453,6 @@ def _compute_pred_gt_metrics(
     }
 
 
-def _draw_masks_2d(
-    ax,
-    frame_rgb: np.ndarray,
-    ski_mask: Optional[np.ndarray],
-    pole_mask: Optional[np.ndarray],
-) -> None:
-    """Draw frame with overlaid ski and pole masks.
-
-    ski_mask: [1,H,W] or [H,W], binary mask for ski
-    pole_mask: [1,H,W] or [H,W], binary mask for ski+pole
-    """
-    frame_h, frame_w = frame_rgb.shape[:2]
-
-    # Display frame as background
-    ax.imshow(frame_rgb)
-
-    # Normalize masks to [H,W] if needed
-    if ski_mask is not None:
-        ski_m = ski_mask.squeeze() if ski_mask.ndim > 2 else ski_mask
-        if ski_m.shape[:2] != (frame_h, frame_w):
-            ski_m = cv2.resize(
-                ski_m.astype(np.float32),
-                (frame_w, frame_h),
-                interpolation=cv2.INTER_NEAREST,
-            )
-        if ski_m.size > 0 and ski_m.max() > 0:
-            # Create a colored mask for ski (blue)
-            ski_colored = np.zeros((*ski_m.shape, 4), dtype=np.float32)
-            ski_colored[..., 2] = ski_m  # Blue channel
-            ski_colored[..., 3] = ski_m * 0.6  # Alpha = 60% where ski_mask > 0
-            ax.imshow(ski_colored, alpha=1.0)
-
-    if pole_mask is not None:
-        pole_m = pole_mask.squeeze() if pole_mask.ndim > 2 else pole_mask
-        if pole_m.shape[:2] != (frame_h, frame_w):
-            pole_m = cv2.resize(
-                pole_m.astype(np.float32),
-                (frame_w, frame_h),
-                interpolation=cv2.INTER_NEAREST,
-            )
-        if pole_m.size > 0 and pole_m.max() > 0:
-            # Create a colored mask for pole_only (pole - ski)
-            if ski_mask is not None:
-                ski_m = ski_mask.squeeze() if ski_mask.ndim > 2 else ski_mask
-                if ski_m.shape[:2] != pole_m.shape[:2]:
-                    ski_m = cv2.resize(
-                        ski_m.astype(np.float32),
-                        (pole_m.shape[1], pole_m.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                pole_only = np.maximum(0, pole_m - ski_m)
-            else:
-                pole_only = pole_m
-
-            if pole_only.max() > 0:
-                # Create a colored mask for pole (yellow/orange)
-                pole_colored = np.zeros((*pole_only.shape, 4), dtype=np.float32)
-                pole_colored[..., 0] = pole_only  # Red channel
-                pole_colored[..., 1] = (
-                    pole_only * 0.8
-                )  # Green channel (for yellow tint)
-                pole_colored[..., 3] = (
-                    pole_only * 0.6
-                )  # Alpha = 60% where pole_only > 0
-                ax.imshow(pole_colored, alpha=1.0)
-
-    ax.set_title("masks (blue=ski, orange=pole)")
-    ax.axis("off")
-
-
 def _render_one_figure(
     frame_rgb: np.ndarray,
     human_pred_3d: np.ndarray,
@@ -538,18 +462,17 @@ def _render_one_figure(
     gt_segments: Optional[Dict[str, np.ndarray]],
     title: str,
     out_path: Path,
-    ski_mask_np: Optional[np.ndarray] = None,
-    pole_mask_np: Optional[np.ndarray] = None,
 ) -> None:
-    fig = plt.figure(figsize=(28, 7))
+    fig = plt.figure(figsize=(21, 7))
 
     # Panel 1: frame
-    ax1 = fig.add_subplot(1, 4, 1)
+    ax1 = fig.add_subplot(1, 3, 1)
     ax1.imshow(frame_rgb)
     ax1.set_title("frame")
     ax1.axis("off")
 
-    gt_human = human_gt_3d if human_gt_3d is not None else human_pred_3d
+    # Use SAM3D body as the skeleton shown in the GT panel.
+    gt_human = human_pred_3d
 
     gt_xyz_for_scale = [gt_human]
     if gt_obj is not None:
@@ -561,8 +484,8 @@ def _render_one_figure(
     pred_xyz_ref = np.concatenate([human_pred_3d, pred_obj], axis=0)
 
     # Panel 2: GT
-    ax2 = fig.add_subplot(1, 4, 2, projection="3d")
-    _draw_human_skeleton_3d(ax2, human_gt_3d)
+    ax2 = fig.add_subplot(1, 3, 2, projection="3d")
+    _draw_human_skeleton_3d(ax2, gt_human)
     if gt_segments is not None:
         _draw_gt_segments_by_config(ax2, gt_segments)
         ax2.legend(loc="upper right")
@@ -587,7 +510,7 @@ def _render_one_figure(
     ax2.set_zlabel("Z")
 
     # Panel 3: Pred
-    ax3 = fig.add_subplot(1, 4, 3, projection="3d")
+    ax3 = fig.add_subplot(1, 3, 3, projection="3d")
     _draw_human_skeleton_3d(ax3, human_pred_3d)
     _draw_equipment_ski_pole(
         ax3,
@@ -603,10 +526,6 @@ def _render_one_figure(
     ax3.set_xlabel("X")
     ax3.set_ylabel("Y")
     ax3.set_zlabel("Z")
-
-    # Panel 4: Masks (2D)
-    ax4 = fig.add_subplot(1, 4, 4)
-    _draw_masks_2d(ax4, frame_rgb, ski_mask_np, pole_mask_np)
 
     fig.suptitle(title)
     fig.tight_layout()
@@ -624,13 +543,19 @@ def _load_pose2equip_from_ckpt(
     for key, value in state_dict.items():
         if key.startswith("model."):
             model_state[key[len("model.") :]] = value
+        else:
+            model_state[key] = value
 
     model = Pose2EquipNet(
-        num_joints=15,
+        num_joints=int(getattr(cfg.pose2equip, "num_joints", 15)),
         left_ankle_idx=int(cfg.pose2equip.left_ankle_idx),
         right_ankle_idx=int(cfg.pose2equip.right_ankle_idx),
         left_wrist_idx=int(cfg.pose2equip.left_wrist_idx),
         right_wrist_idx=int(cfg.pose2equip.right_wrist_idx),
+        target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
+        dino_model_name=str(cfg.pose2equip.dino_model_name),
+        dino_freeze=bool(getattr(cfg.pose2equip, "dino_freeze", True)),
+        dino_image_size=int(getattr(cfg.pose2equip, "dino_image_size", 224)),
     )
     model.load_state_dict(model_state, strict=True)
     model.eval()
@@ -662,7 +587,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-06/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-08/fold_0/checkpoints/fold_0"
         ),
         help="Checkpoint directory containing *.ckpt",
     )
@@ -763,21 +688,9 @@ def main() -> None:
 
         cam1_frames_dir = Path(str(sample_dict["cam1_frames_dir"]))
         sam3d_cam1_kpt3d_dir = Path(str(sample_dict["sam3d_cam1_kpt3d_dir"]))
-        mask_ski_dir = sample_dict.get("sam3_cam1_mask_ski_dir")
-        mask_ski_pole_dir = sample_dict.get("sam3_cam1_mask_ski_pole_dir")
 
         frame_map = _build_idx_file_map(cam1_frames_dir, ["*.png", "*.jpg", "*.jpeg"])
         sam3d_map = _build_idx_file_map(sam3d_cam1_kpt3d_dir, ["kpt3d_*.npy", "*.npy"])
-        ski_mask_map = (
-            _build_idx_file_map(Path(str(mask_ski_dir)), ["*.npz"])
-            if mask_ski_dir is not None
-            else {}
-        )
-        ski_pole_mask_map = (
-            _build_idx_file_map(Path(str(mask_ski_pole_dir)), ["*.npz"])
-            if mask_ski_pole_dir is not None
-            else {}
-        )
 
         common_indices = sorted(set(frame_map.keys()) & set(sam3d_map.keys()))
         if not common_indices:
@@ -860,6 +773,7 @@ def main() -> None:
                 human_gt_raw = np.asarray(
                     np.load(gt_character_map[frame_idx]), dtype=np.float32
                 )
+                human_gt_raw = _rotate_x_180_deg(human_gt_raw)
                 human_gt_3d = _ensure_joint_count(
                     filter_unity_kpts(human_gt_raw),
                     expected_joints,
@@ -871,31 +785,8 @@ def main() -> None:
                 frame_rgb, image_size=image_size, device=device
             )
 
-            ski_mask_t: Optional[torch.Tensor] = None
-            pole_mask_t: Optional[torch.Tensor] = None
-            ski_mask_np: Optional[np.ndarray] = None
-            pole_mask_np: Optional[np.ndarray] = None
-
-            if frame_idx in ski_mask_map:
-                ski_mask = _load_single_mask_npz(ski_mask_map[frame_idx])
-                ski_mask_np = ski_mask.copy()  # Save numpy version for visualization
-                ski_mask_t = _mask_to_model_tensor(
-                    ski_mask, image_size=image_size, device=device
-                )
-            if frame_idx in ski_pole_mask_map:
-                ski_pole_mask = _load_single_mask_npz(ski_pole_mask_map[frame_idx])
-                pole_mask_np = ski_pole_mask.copy()  # Same-view mask for visualization
-                pole_mask_t = _mask_to_model_tensor(
-                    ski_pole_mask, image_size=image_size, device=device
-                )
-
             with torch.no_grad():
-                out = model(
-                    human_3d=human_3d_t,
-                    human_frame=frame_t,
-                    pole_mask=pole_mask_t,
-                    ski_mask=ski_mask_t,
-                )
+                out = model(human_3d=human_3d_t, human_frame=frame_t)
 
             pred_obj = out["object_3d"][0].detach().cpu().numpy().astype(np.float32)
             directions = out["directions"][0].detach().cpu().numpy().astype(np.float32)
@@ -921,6 +812,8 @@ def main() -> None:
                 pole_gt_raw = np.asarray(
                     np.load(gt_pole_map[frame_idx]), dtype=np.float32
                 )
+                ski_gt_raw = _rotate_x_180_deg(ski_gt_raw)
+                pole_gt_raw = _rotate_x_180_deg(pole_gt_raw)
                 try:
                     gt_obj = _compose_gt_equipment_points(
                         ski_kpt3d=ski_gt_raw,
@@ -1001,8 +894,6 @@ def main() -> None:
                 gt_segments=gt_segments,
                 title=title,
                 out_path=vis_path,
-                ski_mask_np=ski_mask_np,
-                pole_mask_np=pole_mask_np,
             )
 
             pred_payload = {

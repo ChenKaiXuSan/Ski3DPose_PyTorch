@@ -46,22 +46,40 @@ SAM3D_BODY_MAPPING = {
 
 # * 这里定义了unity需要过滤的关节点序号和名字
 # * key 是 joint_names_character.json 中的0-based索引，value 与 SAM3D_BODY_MAPPING 保持一致
-UNITY_MAPPING = {
-    52: "Bone_Eye_L",
-    53: "Bone_Eye_R",
-    5: "Upperarm_L",
-    28: "Upperarm_R",
-    6: "lowerarm_l",
-    29: "lowerarm_r",
-    80: "Thigh_L",
-    89: "Thigh_R",
-    81: "calf_l",
-    90: "calf_r",
+UNITY_MALE_MAPPING = {
+    51: "Bone_Eye_L",
+    52: "Bone_Eye_R",
+    4: "Upperarm_L",
+    27: "Upperarm_R",
+    5: "lowerarm_l",
+    28: "lowerarm_r",
+    78: "Thigh_L",
+    87: "Thigh_R",
+    79: "calf_l",
+    88: "calf_r",
     83: "Foot_L",
     92: "Foot_R",
     30: "Hand_R",
     7: "Hand_L",
-    50: "neck_01",
+    49: "neck_01",
+}
+
+UNITY_FEMALE_MAPPING = {
+    51: "Bone_Eye_L",
+    52: "Bone_Eye_R",
+    4: "Upperarm_L",
+    27: "Upperarm_R",
+    5: "lowerarm_l",
+    28: "lowerarm_r",
+    79: "Thigh_L",
+    88: "Thigh_R",
+    80: "calf_l",
+    89: "calf_r",
+    82: "Foot_L",
+    91: "Foot_R",
+    29: "Hand_R",
+    6: "Hand_L",
+    49: "neck_01",
 }
 
 # * 过滤后的index和关节点名字
@@ -231,15 +249,29 @@ def filter_sam3d_body_kpts(kpts: np.ndarray) -> np.ndarray:
     return arr[selected]
 
 
-def filter_unity_kpts(kpts: np.ndarray) -> np.ndarray:
+def filter_unity_kpts(kpts: np.ndarray, flag: str, gender: str = "male") -> np.ndarray:
     """Filter Unity keypoints to FILTERED_KPTS_MAPPING order.
 
     Directly uses UNITY_MAPPING keys as source indices, output order matches
     filter_sam3d_body_kpts exactly.
     """
     arr = _normalize_kpts_array(kpts)
-    selected = list(UNITY_MAPPING.keys())
-    # selected = [idx + 1 for idx in selected]  # Convert to 1-based indices
+    if flag == "3d":
+        if gender == "male":
+            selected = list(UNITY_MALE_MAPPING.keys())
+        else:
+            selected = list(UNITY_FEMALE_MAPPING.keys())
+    elif flag == "2d":
+        # 2d keypoints index + 1
+        if gender == "male":
+            selected = [idx + 1 for idx in UNITY_MALE_MAPPING.keys()]
+        else:
+            selected = [idx + 1 for idx in UNITY_FEMALE_MAPPING.keys()]
+    else:
+        raise ValueError(
+            f"Invalid flag {flag} for filter_unity_kpts, expected '2d' or '3d'."
+        )
+
     if max(selected) >= arr.shape[0]:
         raise IndexError(
             f"UNITY_MAPPING index out of range for source shape {arr.shape}."
