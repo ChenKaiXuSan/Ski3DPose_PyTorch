@@ -553,10 +553,6 @@ def _load_pose2equip_from_ckpt(
 
     model = Pose2EquipNet(
         num_joints=int(getattr(cfg.pose2equip, "num_joints", 15)),
-        left_ankle_idx=int(cfg.pose2equip.left_ankle_idx),
-        right_ankle_idx=int(cfg.pose2equip.right_ankle_idx),
-        left_wrist_idx=int(cfg.pose2equip.left_wrist_idx),
-        right_wrist_idx=int(cfg.pose2equip.right_wrist_idx),
         target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
         dino_model_name=str(cfg.pose2equip.dino_model_name),
         dino_freeze=bool(getattr(cfg.pose2equip, "dino_freeze", True)),
@@ -804,8 +800,6 @@ def main() -> None:
                 out = model(human_3d=human_3d_t, human_frame=frame_t)
 
             pred_obj = out["object_3d"][0].detach().cpu().numpy().astype(np.float32)
-            directions = out["directions"][0].detach().cpu().numpy().astype(np.float32)
-            lengths = out["lengths"][0].detach().cpu().numpy().astype(np.float32)
 
             # Compute 3D equipment lengths
             pred_lengths_dict = _compute_equipment_lengths(pred_obj)
@@ -916,8 +910,6 @@ def main() -> None:
                 "unity_cam1_kpt3d_path": str(unity_human_path),
                 "equipment_labels": EQUIP_LABELS,
                 "pred_object_3d": pred_obj.tolist(),
-                "pred_directions": directions.tolist(),
-                "pred_lengths": lengths.tolist(),
                 "pred_equipment_lengths": pred_lengths_dict,
                 "gt_object_3d": gt_obj.tolist() if gt_obj is not None else None,
                 "gt_equipment_lengths": (

@@ -42,9 +42,9 @@ from project.map_config import (
     filter_sam3d_body_kpts,
     filter_unity_kpts,
 )
+from project.dataloader.canonicalize import apply_canonical_transform_numpy, canonicalize_pose_numpy
 
 logger = logging.getLogger(__name__)
-
 
 class LabeledUnityDataset(Dataset):
     """
@@ -59,7 +59,6 @@ class LabeledUnityDataset(Dataset):
         load_frames: bool = True,
         load_2d_kpt: bool = True,
         load_3d_kpt: bool = True,
-        load_mask: bool = True,
         target_t: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -69,17 +68,11 @@ class LabeledUnityDataset(Dataset):
         self._load_frames = bool(load_frames)
         self._load_2d_kpt = bool(load_2d_kpt)
         self._load_3d_kpt = bool(load_3d_kpt)
-        self._load_mask = bool(load_mask)
-        if self._load_mask:
-            logger.warning("load_mask is ignored in single-view dataset (mask pipeline removed).")
+
         self._target_t = int(target_t) if target_t is not None else None
         if self._target_t is not None and self._target_t <= 0:
             raise ValueError("target_t must be > 0 when provided.")
-        if (
-            not self._load_frames
-            and not self._load_2d_kpt
-            and not self._load_3d_kpt
-        ):
+        if not self._load_frames and not self._load_2d_kpt and not self._load_3d_kpt:
             raise ValueError(
                 "At least one of load_frames/load_2d_kpt/load_3d_kpt must be enabled."
             )
@@ -439,6 +432,8 @@ class LabeledUnityDataset(Dataset):
         common_idx: List[int],
         sam3d_cam1_kpt2d_map: Optional[Dict[int, Path]] = None,
         sam3d_cam1_kpt3d_map: Optional[Dict[int, Path]] = None,
+        character_gt_canon_tf: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
+        character_sam_canon_tf: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
     ) -> Tuple[
         Optional[torch.Tensor],
         Optional[torch.Tensor],
@@ -491,15 +486,39 @@ class LabeledUnityDataset(Dataset):
             if self._load_2d_kpt:
                 cam1_2d = np.asarray(np.load(cam1_kpt2d_map[idx]), dtype=np.float32)
                 cam1_2d_filtered = (
-                    filter_unity_kpts(cam1_2d, flag='2d', gender=norm_gender) if is_character_variant else cam1_2d
+                    filter_unity_kpts(cam1_2d, flag="2d", gender=norm_gender)
+                    if is_character_variant
+                    else cam1_2d
                 )
                 unity_gt_cam1_kpt2d.append(torch.from_numpy(cam1_2d_filtered))
 
             if self._load_3d_kpt:
                 gt_3d = np.asarray(np.load(kpt3d_map[idx]), dtype=np.float32)
                 gt_3d_filtered = (
-                    filter_unity_kpts(gt_3d, flag='3d', gender=norm_gender) if is_character_variant else gt_3d
+                    filter_unity_kpts(gt_3d, flag="3d", gender=norm_gender)
+                    if is_character_variant
+                    else gt_3d
                 )
+
+                if is_character_variant:
+                    gt_3d_filtered, gt_tf = canonicalize_pose_numpy(
+                        gt_3d_filtered,
+                        left_hip=6,
+                        right_hip=7,
+                        neck=14,
+                        mode="first_frame",
+                        enforce_face_z_positive=True,
+                        left_eye=0,
+                        right_eye=1,
+                    )
+                    if character_gt_canon_tf is not None:
+                        character_gt_canon_tf[idx] = (gt_tf["pelvis"], gt_tf["R"])
+                elif character_gt_canon_tf is not None and idx in character_gt_canon_tf:
+                    pelvis, R = character_gt_canon_tf[idx]
+                    gt_3d_filtered = apply_canonical_transform_numpy(
+                        gt_3d_filtered, pelvis, R
+                    )
+
                 unity_gt_kpt3d.append(torch.from_numpy(gt_3d_filtered))
 
             if self._load_2d_kpt:
@@ -515,10 +534,34 @@ class LabeledUnityDataset(Dataset):
                 sam1_3d = np.asarray(
                     np.load(sam3d_cam1_kpt3d_map[idx]), dtype=np.float32
                 )
+                sam1_3d_filtered = filter_sam3d_body_kpts(sam1_3d)
 
-                sam3d_cam1_kpt3d.append(
-                    torch.from_numpy(filter_sam3d_body_kpts(sam1_3d))
-                )
+                if is_character_variant:
+                    sam1_3d_filtered, sam_tf = canonicalize_pose_numpy(
+                        sam1_3d_filtered,
+                        left_hip=6,
+                        right_hip=7,
+                        neck=14,
+                        mode="first_frame",
+                        enforce_face_z_positive=True,
+                        left_eye=0,
+                        right_eye=1,
+                    )
+                    if character_sam_canon_tf is not None:
+                        character_sam_canon_tf[idx] = (
+                            sam_tf["pelvis"],
+                            sam_tf["R"],
+                        )
+                elif (
+                    character_sam_canon_tf is not None
+                    and idx in character_sam_canon_tf
+                ):
+                    pelvis, R = character_sam_canon_tf[idx]
+                    sam1_3d_filtered = apply_canonical_transform_numpy(
+                        sam1_3d_filtered, pelvis, R
+                    )
+
+                sam3d_cam1_kpt3d.append(torch.from_numpy(sam1_3d_filtered))
 
         unity_gt_cam1_kpt2d_t = (
             torch.stack(unity_gt_cam1_kpt2d, dim=0) if self._load_2d_kpt else None
@@ -575,6 +618,8 @@ class LabeledUnityDataset(Dataset):
             if has_variants
             else ["default"]
         )
+        if "character" in variants:
+            variants = ["character"] + [v for v in variants if v != "character"]
         person_id = str(item.get("person_id", "male")).lower()
         gender = "female" if "female" in person_id else "male"
 
@@ -653,8 +698,7 @@ class LabeledUnityDataset(Dataset):
         common_idx = [
             idx
             for idx in all_common
-            if idx in sam_valid_set
-            and idx not in cam1_none_set
+            if idx in sam_valid_set and idx not in cam1_none_set
         ]
         skipped = len(all_common) - len(common_idx)
         if skipped:
@@ -750,6 +794,8 @@ class LabeledUnityDataset(Dataset):
         # Load keypoints for all variants
         variant_kpts: Dict[str, Dict[str, Any]] = {}
         frame_indices_t = torch.empty(0, dtype=torch.long)
+        character_gt_canon_tf: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        character_sam_canon_tf: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         for variant in variants:
             if has_variants:
                 cam1_kpt2d_dir_variant = Path(cam1_kpt2d_dirs[variant])
@@ -774,6 +820,8 @@ class LabeledUnityDataset(Dataset):
                 common_idx=selected_common_idx,
                 sam3d_cam1_kpt2d_map=sam3d_cam1_kpt2d_map,
                 sam3d_cam1_kpt3d_map=sam3d_cam1_kpt3d_map,
+                character_gt_canon_tf=character_gt_canon_tf,
+                character_sam_canon_tf=character_sam_canon_tf,
             )
 
             variant_kpts[variant] = {
@@ -877,6 +925,5 @@ def whole_video_dataset(
         load_frames=load_frames,
         load_2d_kpt=load_2d_kpt,
         load_3d_kpt=load_3d_kpt,
-        load_mask=load_mask,
         target_t=target_t,
     )

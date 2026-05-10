@@ -176,10 +176,6 @@ def _load_pose2equip_from_ckpt(
 
     model = Pose2EquipNet(
         num_joints=int(getattr(cfg.pose2equip, "num_joints", 15)),
-        left_ankle_idx=int(cfg.pose2equip.left_ankle_idx),
-        right_ankle_idx=int(cfg.pose2equip.right_ankle_idx),
-        left_wrist_idx=int(cfg.pose2equip.left_wrist_idx),
-        right_wrist_idx=int(cfg.pose2equip.right_wrist_idx),
         target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
         dino_model_name=str(cfg.pose2equip.dino_model_name),
         dino_freeze=bool(getattr(cfg.pose2equip, "dino_freeze", True)),
@@ -462,8 +458,6 @@ def main() -> None:
             out = model(human_3d=human_3d_t, human_frame=frame_t)
 
         pred_obj = out["object_3d"][0].detach().cpu().numpy().astype(np.float32)
-        pred_dirs = out["directions"][0].detach().cpu().numpy().astype(np.float32)
-        pred_lens = out["lengths"][0].detach().cpu().numpy().astype(np.float32)
 
         fig = plt.figure(figsize=(22, 7))
         ax1 = fig.add_subplot(1, 3, 1)
@@ -502,8 +496,6 @@ def main() -> None:
                     "pose2equip_ckpt": str(ckpt_path),
                     "equipment_labels": EQUIP_LABELS,
                     "pred_object_3d": pred_obj.tolist(),
-                    "pred_directions": pred_dirs.tolist(),
-                    "pred_lengths": pred_lens.tolist(),
                 },
                 f,
                 ensure_ascii=False,

@@ -101,6 +101,22 @@ FILTERED_KPTS_MAPPING = {
     14: "neck_01",
 }
 
+SKI_MAPPING = {
+    0: "ski_left_center",
+    1: "ski_left_front",
+    2: "ski_left_back",
+    3: "ski_right_center",
+    4: "ski_right_front",
+    5: "ski_right_back",
+}
+
+POLE_MAPPING = {
+    0: "pole_left_handle",
+    1: "pole_left_tip",
+    2: "pole_right_handle",
+    3: "pole_right_tip",
+}
+
 TARGET_IDS = list(SAM3D_BODY_MAPPING.keys())
 
 ID_TO_INDEX = {jid: idx for idx, jid in enumerate(TARGET_IDS)}
