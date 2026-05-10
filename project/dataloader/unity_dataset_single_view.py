@@ -70,6 +70,8 @@ class LabeledUnityDataset(Dataset):
         self._load_2d_kpt = bool(load_2d_kpt)
         self._load_3d_kpt = bool(load_3d_kpt)
         self._load_mask = bool(load_mask)
+        if self._load_mask:
+            logger.warning("load_mask is ignored in single-view dataset (mask pipeline removed).")
         self._target_t = int(target_t) if target_t is not None else None
         if self._target_t is not None and self._target_t <= 0:
             raise ValueError("target_t must be > 0 when provided.")
@@ -77,10 +79,9 @@ class LabeledUnityDataset(Dataset):
             not self._load_frames
             and not self._load_2d_kpt
             and not self._load_3d_kpt
-            and not self._load_mask
         ):
             raise ValueError(
-                "At least one of load_frames/load_2d_kpt/load_3d_kpt/load_mask must be enabled."
+                "At least one of load_frames/load_2d_kpt/load_3d_kpt must be enabled."
             )
 
     def __len__(self) -> int:
@@ -193,37 +194,6 @@ class LabeledUnityDataset(Dataset):
         return np.asarray(arr_2d, dtype=np.float32), np.asarray(
             arr_3d, dtype=np.float32
         )
-
-    @staticmethod
-    def _load_mask_file(npz_path: Path) -> np.ndarray:
-        """Load one SAM3 mask npz and return a fixed single-channel binary mask.
-
-        SAM may output variable number of instances per frame (V,H,W).
-        For stable batching and cross-class consistency, we merge all instances
-        into one semantic mask with shape (1,H,W).
-        """
-        data = np.load(npz_path, allow_pickle=True)
-        if "masks" not in data.files:
-            raise KeyError(f"Missing 'masks' in SAM mask npz: {npz_path}")
-
-        masks = np.asarray(data["masks"])
-        if masks.ndim == 2:
-            # Already a single mask (H,W) -> (1,H,W)
-            merged = (masks > 0)[None, ...]
-            return merged
-
-        if masks.ndim != 3:
-            raise ValueError(
-                f"Expected SAM mask shape (V,H,W) or (H,W), got {tuple(masks.shape)} in {npz_path}"
-            )
-
-        if masks.shape[0] == 0:
-            # Keep spatial shape and return empty semantic mask.
-            return np.zeros((1, masks.shape[-2], masks.shape[-1]), dtype=np.bool_)
-
-        # Merge all instances into one foreground mask and keep channel dim.
-        merged = np.any(masks > 0, axis=0)
-        return merged[None, ...]
 
     @staticmethod
     def _is_empty_keypoint_array(arr: np.ndarray) -> bool:
@@ -461,6 +431,7 @@ class LabeledUnityDataset(Dataset):
     def _load_single_variant_keypoints(
         self,
         variant: str,
+        gender: str,
         cam1_kpt2d_dir: Path,
         kpt3d_dir: Path,
         sam3d_cam1_kpt2d_dir: Path,
@@ -512,19 +483,22 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt3d: List[torch.Tensor] = []
 
         is_character_variant = variant == "character"
+        norm_gender = str(gender).lower()
+        if norm_gender not in {"male", "female"}:
+            norm_gender = "male"
 
         for idx in common_idx:
             if self._load_2d_kpt:
                 cam1_2d = np.asarray(np.load(cam1_kpt2d_map[idx]), dtype=np.float32)
                 cam1_2d_filtered = (
-                    filter_unity_kpts(cam1_2d) if is_character_variant else cam1_2d
+                    filter_unity_kpts(cam1_2d, flag='2d', gender=norm_gender) if is_character_variant else cam1_2d
                 )
                 unity_gt_cam1_kpt2d.append(torch.from_numpy(cam1_2d_filtered))
 
             if self._load_3d_kpt:
                 gt_3d = np.asarray(np.load(kpt3d_map[idx]), dtype=np.float32)
                 gt_3d_filtered = (
-                    filter_unity_kpts(gt_3d) if is_character_variant else gt_3d
+                    filter_unity_kpts(gt_3d, flag='3d', gender=norm_gender) if is_character_variant else gt_3d
                 )
                 unity_gt_kpt3d.append(torch.from_numpy(gt_3d_filtered))
 
@@ -584,8 +558,6 @@ class LabeledUnityDataset(Dataset):
         kpt3d_dir = Path(item["kpt3d_dir"])
         sam3d_cam1_kpt2d_dir = Path(item["sam3d_cam1_kpt2d_dir"])
         sam3d_cam1_kpt3d_dir = Path(item["sam3d_cam1_kpt3d_dir"])
-        sam3_cam1_mask_ski_dir = Path(item["sam3_cam1_mask_ski_dir"])
-        sam3_cam2_mask_ski_pole_dir = Path(item["sam3_cam2_mask_ski_pole_dir"])
 
         # Detect variants: character, pole, ski
         cam1_kpt2d_dirs_raw = item.get("cam1_kpt2d_dirs")
@@ -603,6 +575,9 @@ class LabeledUnityDataset(Dataset):
             if has_variants
             else ["default"]
         )
+        person_id = str(item.get("person_id", "male")).lower()
+        gender = "female" if "female" in person_id else "male"
+
         if has_variants and not variants:
             raise RuntimeError(
                 "Variant dirs mismatch: cam1_kpt2d_dirs and kpt3d_dirs have no common variant keys."
@@ -674,25 +649,12 @@ class LabeledUnityDataset(Dataset):
                 else sam_valid_set & set(sam3d_cam1_kpt3d_map)
             )
         sam_valid_set = sam_valid_set or set()
-        mask_ski_map: Dict[int, Path] = {}
-        mask_ski_pole_map: Dict[int, Path] = {}
-        mask_valid_set: Optional[set[int]] = None
-        if self._load_mask:
-            mask_ski_map = self._build_idx_file_map(sam3_cam1_mask_ski_dir, "*.npz")
-            mask_ski_pole_map = self._build_idx_file_map(
-                sam3_cam2_mask_ski_pole_dir, "*.npz"
-            )
-            mask_valid_set = set(mask_ski_map) & set(mask_ski_pole_map)
 
         common_idx = [
             idx
             for idx in all_common
             if idx in sam_valid_set
             and idx not in cam1_none_set
-            and (
-                not self._load_mask
-                or (mask_valid_set is not None and idx in mask_valid_set)
-            )
         ]
         skipped = len(all_common) - len(common_idx)
         if skipped:
@@ -728,22 +690,6 @@ class LabeledUnityDataset(Dataset):
                 "none_detected path: cam1=%s",
                 str((cam1_none_dir / "none_detected_frames.txt").resolve()),
             )
-
-            if self._load_mask:
-                missing_mask_ski = [
-                    idx for idx in all_common if idx not in mask_ski_map
-                ]
-                missing_mask_ski_pole = [
-                    idx for idx in all_common if idx not in mask_ski_pole_map
-                ]
-                logger.error(
-                    "Missing mask frames for %s/%s/%s. ski(first 20)=%s, ski_pole(first 20)=%s",
-                    item.get("person_id", "unknown"),
-                    item.get("action_id", "unknown"),
-                    item.get("cam1_id", "unknown"),
-                    missing_mask_ski[:20],
-                    missing_mask_ski_pole[:20],
-                )
 
             if self._load_2d_kpt:
                 cam1_missing_2d = [
@@ -801,58 +747,6 @@ class LabeledUnityDataset(Dataset):
             # Single sample frame layout: (C,T,H,W); DataLoader adds batch dim.
             cam1_frames_t = cam1_frames_t.permute(1, 0, 2, 3)
 
-        mask_ski_t: Optional[torch.Tensor] = None
-        mask_ski_pole_t: Optional[torch.Tensor] = None
-        if self._load_mask:
-            mask_ski = [
-                torch.from_numpy(self._load_mask_file(mask_ski_map[idx]))
-                for idx in selected_common_idx
-            ]
-            mask_ski_pole = [
-                torch.from_numpy(self._load_mask_file(mask_ski_pole_map[idx]))
-                for idx in selected_common_idx
-            ]
-
-            # Masks may come with mixed source resolutions (e.g. 288x288 and 1080x1920).
-            # Unify H/W per sample before stacking.
-            if self._load_frames and cam1_frames_t is not None:
-                target_h = int(cam1_frames_t.shape[2])
-                target_w = int(cam1_frames_t.shape[3])
-            elif len(mask_ski) > 0:
-                target_h = int(mask_ski[0].shape[-2])
-                target_w = int(mask_ski[0].shape[-1])
-            elif len(mask_ski_pole) > 0:
-                target_h = int(mask_ski_pole[0].shape[-2])
-                target_w = int(mask_ski_pole[0].shape[-1])
-            else:
-                raise RuntimeError("Mask loading enabled but no mask frames found.")
-
-            def _resize_mask_list(mask_list: List[torch.Tensor]) -> List[torch.Tensor]:
-                out_masks: List[torch.Tensor] = []
-                for m in mask_list:
-                    if int(m.shape[-2]) != target_h or int(m.shape[-1]) != target_w:
-                        # m: (1,H,W) -> interpolate expects (N,C,H,W)
-                        m = (
-                            F.interpolate(
-                                m.unsqueeze(0).to(torch.float32),
-                                size=(target_h, target_w),
-                                mode="nearest",
-                            )
-                            .squeeze(0)
-                            .gt(0.5)
-                        )
-                    out_masks.append(m)
-                return out_masks
-
-            mask_ski = _resize_mask_list(mask_ski)
-            mask_ski_pole = _resize_mask_list(mask_ski_pole)
-
-            mask_ski_t = torch.stack(mask_ski, dim=0)  # t, v, h, w
-            mask_ski_pole_t = torch.stack(mask_ski_pole, dim=0)  #
-
-            mask_ski_t = mask_ski_t.to(torch.float32).permute(1, 0, 2, 3)
-            mask_ski_pole_t = mask_ski_pole_t.to(torch.float32).permute(1, 0, 2, 3)
-
         # Load keypoints for all variants
         variant_kpts: Dict[str, Dict[str, Any]] = {}
         frame_indices_t = torch.empty(0, dtype=torch.long)
@@ -872,6 +766,7 @@ class LabeledUnityDataset(Dataset):
                 frame_indices_t,
             ) = self._load_single_variant_keypoints(
                 variant=variant,
+                gender=gender,
                 cam1_kpt2d_dir=cam1_kpt2d_dir_variant,
                 kpt3d_dir=kpt3d_dir_variant,
                 sam3d_cam1_kpt2d_dir=sam3d_cam1_kpt2d_dir,
@@ -902,12 +797,6 @@ class LabeledUnityDataset(Dataset):
         if self._load_frames and cam1_frames_t is not None:
             out["frames"] = {
                 "cam1": cam1_frames_t,
-            }
-
-        if self._load_mask and mask_ski_t is not None and mask_ski_pole_t is not None:
-            out["masks"] = {
-                "ski": mask_ski_t,
-                "ski_pole": mask_ski_pole_t,
             }
 
         # Add keypoint data organized by variant

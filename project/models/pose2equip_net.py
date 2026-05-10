@@ -157,20 +157,14 @@ class Pose2EquipNet(nn.Module):
         self,
         num_joints=70,
         hidden_dim=256,
-        left_ankle_idx=13,
-        right_ankle_idx=14,
-        left_wrist_idx=41,
-        right_wrist_idx=62,
+        num_equip_kpts: int = 8,
         target_skeleton_connections_idx=None,
         dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
         dino_freeze: bool = True,
         dino_image_size: int = 224,
     ):
         super().__init__()
-        self.left_ankle_idx = left_ankle_idx
-        self.right_ankle_idx = right_ankle_idx
-        self.left_wrist_idx = left_wrist_idx
-        self.right_wrist_idx = right_wrist_idx
+        self.num_equip_kpts = int(num_equip_kpts)
         self.dino_model_name = str(dino_model_name)
         self.dino_freeze = bool(dino_freeze)
         self.dino_image_size = int(dino_image_size)
@@ -193,11 +187,10 @@ class Pose2EquipNet(nn.Module):
             nn.ReLU(),
         )
 
-        # 输出 4 个方向 + 4 个长度
-        # 4 directions: left_ski, right_ski, left_pole, right_pole
-        self.dir_head = nn.Linear(hidden_dim, 4 * 3)
-        self.len_head = nn.Linear(hidden_dim, 4)
-        self.dino_len_head = nn.Linear(hidden_dim, 4)
+        # 直接回归 num_equip_kpts 个装备 3D 关键点
+        # 输出顺序: left_ski_tip, left_ski_tail, right_ski_tip, right_ski_tail,
+        #           left_pole_grip, left_pole_tip, right_pole_grip, right_pole_tip
+        self.equip_head = nn.Linear(hidden_dim, self.num_equip_kpts * 3)
 
     def forward(
         self,
@@ -207,80 +200,13 @@ class Pose2EquipNet(nn.Module):
         # human_3d: [B, J, 3]
         # human_frame: [B, 3, H, W]
 
-        equip_feat = self.pose_encoder(human_3d)
-        b, _, _ = human_3d.shape
-
+        b = human_3d.shape[0]
+        pose_feat = self.pose_encoder(human_3d)
         frame_feat = self.frame_encoder(human_frame)
 
-        # Auxiliary branch: supervise DINO features directly with equipment lengths.
-        dino_lengths = self.dino_len_head(frame_feat).reshape(b, 4, 1)
-        dino_lengths = torch.nn.functional.softplus(dino_lengths) + 1e-4
+        fused = self.fuse(torch.cat([pose_feat, frame_feat], dim=-1))
 
-        equip_feat = self.fuse(torch.cat([equip_feat, frame_feat], dim=-1))
+        # 直接回归 8 个装备关键点的 3D 坐标 [B, 8, 3]
+        pred_obj = self.equip_head(fused).reshape(b, self.num_equip_kpts, 3)
 
-        directions = self.dir_head(equip_feat).reshape(b, 4, 3)
-        directions = torch.nn.functional.normalize(directions, dim=-1)
-
-        lengths = self.len_head(equip_feat).reshape(b, 4, 1)
-        lengths = torch.nn.functional.softplus(lengths) + 1e-4
-
-        pred_obj = self.build_equipment(human_3d, directions, lengths)
-
-        return {
-            "object_3d": pred_obj,
-            "directions": directions,
-            "lengths": lengths,
-            "dino_lengths": dino_lengths,
-        }
-
-    def build_equipment(self, human_3d, directions, lengths):
-        """
-        输出顺序:
-        0 left_ski_tip
-        1 left_ski_tail
-        2 right_ski_tip
-        3 right_ski_tail
-        4 left_pole_grip
-        5 left_pole_tip
-        6 right_pole_grip
-        7 right_pole_tip
-        """
-        left_ankle = human_3d[:, self.left_ankle_idx]
-        right_ankle = human_3d[:, self.right_ankle_idx]
-        left_wrist = human_3d[:, self.left_wrist_idx]
-        right_wrist = human_3d[:, self.right_wrist_idx]
-
-        d_left_ski = directions[:, 0]
-        d_right_ski = directions[:, 1]
-        d_left_pole = directions[:, 2]
-        d_right_pole = directions[:, 3]
-
-        l_left_ski = lengths[:, 0]
-        l_right_ski = lengths[:, 1]
-        l_left_pole = lengths[:, 2]
-        l_right_pole = lengths[:, 3]
-
-        left_ski_tip = left_ankle + 0.5 * l_left_ski * d_left_ski
-        left_ski_tail = left_ankle - 0.5 * l_left_ski * d_left_ski
-        right_ski_tip = right_ankle + 0.5 * l_right_ski * d_right_ski
-        right_ski_tail = right_ankle - 0.5 * l_right_ski * d_right_ski
-
-        left_pole_grip = left_wrist
-        left_pole_tip = left_wrist + l_left_pole * d_left_pole
-        right_pole_grip = right_wrist
-        right_pole_tip = right_wrist + l_right_pole * d_right_pole
-
-        obj = torch.stack(
-            [
-                left_ski_tip,
-                left_ski_tail,
-                right_ski_tip,
-                right_ski_tail,
-                left_pole_grip,
-                left_pole_tip,
-                right_pole_grip,
-                right_pole_tip,
-            ],
-            dim=1,
-        )
-        return obj
+        return {"object_3d": pred_obj}

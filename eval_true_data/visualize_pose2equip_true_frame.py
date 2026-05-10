@@ -48,16 +48,28 @@ def _extract_frame_idx(path: Path) -> int:
 
 def _load_record(npz_path: Path) -> Dict[str, Any]:
     data = np.load(npz_path, allow_pickle=True)
-    if "outputs" not in data.files:
-        raise KeyError(f"Missing 'outputs' in npz: {npz_path}")
-    outs = data["outputs"]
-    if len(outs) == 0:
-        raise ValueError(f"Empty 'outputs' in npz: {npz_path}")
-    rec = outs[0]
-    if isinstance(rec, np.ndarray) and rec.shape == ():
-        rec = rec.item()
-    if not isinstance(rec, dict):
-        raise TypeError(f"Unexpected output type in {npz_path}: {type(rec)}")
+
+    # Format A (pro_*): {'outputs': np.array([dict(...)]))}
+    if "outputs" in data.files:
+        outs = data["outputs"]
+        if len(outs) == 0:
+            raise ValueError(f"Empty 'outputs' in npz: {npz_path}")
+        rec = outs[0]
+        if isinstance(rec, np.ndarray) and rec.shape == ():
+            rec = rec.item()
+        if not isinstance(rec, dict):
+            raise TypeError(f"Unexpected output type in {npz_path}: {type(rec)}")
+        return rec
+
+    # Format B (run_*): flat dict-like NPZ with top-level arrays.
+    rec = {k: data[k] for k in data.files}
+    required_keys = {"frame", "pred_keypoints_3d", "pred_keypoints_2d"}
+    if not required_keys.issubset(rec.keys()):
+        raise KeyError(
+            f"Unsupported npz structure for {npz_path}. "
+            f"Need one of: outputs[] dict OR flat keys including {sorted(required_keys)}. "
+            f"Got keys={list(data.files)}"
+        )
     return rec
 
 
@@ -163,11 +175,15 @@ def _load_pose2equip_from_ckpt(
             model_state[key[len("model.") :]] = value
 
     model = Pose2EquipNet(
-        num_joints=15,
+        num_joints=int(getattr(cfg.pose2equip, "num_joints", 15)),
         left_ankle_idx=int(cfg.pose2equip.left_ankle_idx),
         right_ankle_idx=int(cfg.pose2equip.right_ankle_idx),
         left_wrist_idx=int(cfg.pose2equip.left_wrist_idx),
         right_wrist_idx=int(cfg.pose2equip.right_wrist_idx),
+        target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
+        dino_model_name=str(cfg.pose2equip.dino_model_name),
+        dino_freeze=bool(getattr(cfg.pose2equip, "dino_freeze", True)),
+        dino_image_size=int(getattr(cfg.pose2equip, "dino_image_size", 224)),
     )
     model.load_state_dict(model_state, strict=True)
     model.eval()
@@ -260,7 +276,7 @@ def _draw_equipment_3d(ax, pred_obj: np.ndarray) -> None:
         pred_obj[:, 0], pred_obj[:, 1], pred_obj[:, 2], s=24, c="tab:green", alpha=0.95
     )
 
-    segments = [(0, 1), (2, 3), (4, 5), (6, 7)]
+    segments = [(0, 1), (2, 3), (4, 7), (6, 5)]
     for i, j in segments:
         ax.plot(
             [pred_obj[i, 0], pred_obj[j, 0]],
@@ -268,6 +284,17 @@ def _draw_equipment_3d(ax, pred_obj: np.ndarray) -> None:
             [pred_obj[i, 2], pred_obj[j, 2]],
             color="tab:green",
             linewidth=2.6,
+        )
+
+    for i in range(pred_obj.shape[0]):
+        name = EQUIP_LABELS[i] if i < len(EQUIP_LABELS) else f"pt{i}"
+        ax.text(
+            float(pred_obj[i, 0]),
+            float(pred_obj[i, 1]),
+            float(pred_obj[i, 2]),
+            f"{i}:{name}",
+            fontsize=8,
+            color="darkgreen",
         )
 
 
@@ -282,7 +309,7 @@ def main() -> None:
         help="Root containing <run_id>/<left|right>/frame_xxxxx_sam_3d_body_outputs.npz",
     )
     parser.add_argument(
-        "--run-id", type=str, default="pro_2", help="Run/person id under sam-root"
+        "--run-id", type=str, default="run_4", help="Run/person id under sam-root"
     )
     parser.add_argument(
         "--side",
@@ -298,10 +325,10 @@ def main() -> None:
         help="Specific frame index. Default: middle one",
     )
     parser.add_argument(
-        "--max-frames", type=int, default=20, help="How many frames to visualize"
+        "--max-frames", type=int, default=30, help="How many frames to visualize"
     )
     parser.add_argument(
-        "--stride", type=int, default=30, help="Frame stride when max-frames > 1"
+        "--stride", type=int, default=3, help="Frame stride when max-frames > 1"
     )
     parser.add_argument(
         "--out-dir",
@@ -314,14 +341,14 @@ def main() -> None:
     parser.add_argument(
         "--show-joint-labels",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Whether to draw joint labels",
     )
     parser.add_argument(
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-06/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-10/fold_0/checkpoints/fold_0"
         ),
         help="Pose2Equip checkpoint directory (or its parent).",
     )
@@ -446,7 +473,7 @@ def main() -> None:
         _draw_3d(ax2, kpt3d_t, edges, labels, args.show_joint_labels)
 
         ax3 = fig.add_subplot(1, 3, 3, projection="3d")
-        _draw_3d(ax3, kpt3d_t, edges, labels, False)
+        _draw_3d(ax3, kpt3d_t, edges, labels, args.show_joint_labels)
         _draw_equipment_3d(ax3, pred_obj)
         ax3.set_title("SAM human 3D + Pose2Equip")
         _set_equal_axes_3d(ax3, np.concatenate([kpt3d_t, pred_obj], axis=0))

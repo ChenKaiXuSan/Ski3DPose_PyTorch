@@ -25,7 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 from project.map_config import (
     FILTER_SKELETON_CONNECTIONS,
     filter_unity_kpts,
-    filter_sam3d_body_kpts,
 )
 from project.models.pose2equip_net import Pose2EquipNet
 
@@ -35,16 +34,16 @@ EQUIP_LABELS = [
     "right_ski_tip",
     "right_ski_tail",
     "left_pole_grip",
-    "left_pole_tip",
-    "right_pole_grip",
     "right_pole_tip",
+    "right_pole_grip",
+    "left_pole_tip",
 ]
 
 EQUIP_SEGMENTS = [
     (0, 1),  # left ski
     (2, 3),  # right ski
-    (4, 5),  # left pole
-    (6, 7),  # right pole
+    (4, 7),  # left pole
+    (6, 5),  # right pole
 ]
 
 
@@ -163,26 +162,6 @@ def _ensure_joint_count(
     return arr
 
 
-def _rotate_x_180_deg(points: np.ndarray) -> np.ndarray:
-    """Rotate 3D points around X-axis by 180 degrees.
-
-    Input/Output shape: [N, 3]
-    Transform:
-      x' = x
-      y' = -y
-      z' = -z
-    """
-    pts = np.asarray(points, dtype=np.float32)
-    if pts.ndim != 2 or pts.shape[1] != 3:
-        raise ValueError(f"Expected shape [N,3], got {pts.shape}")
-    out = pts.copy()
-    out[:, 0] = pts[:, 0]
-    out[:, 1] = -pts[:, 1]
-    out[:, 2] = -pts[:, 2]
-
-    return out
-
-
 def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
     ax.scatter(
         human_3d[:, 0], human_3d[:, 1], human_3d[:, 2], s=10, c="tab:blue", alpha=0.7
@@ -198,6 +177,18 @@ def _draw_human_skeleton_3d(ax, human_3d: np.ndarray) -> None:
                 linewidth=1.2,
                 alpha=0.8,
             )
+
+    # Draw joint indices to make skeleton connectivity debugging easier.
+    for idx, p in enumerate(human_3d):
+        ax.text(
+            float(p[0]),
+            float(p[1]),
+            float(p[2]),
+            str(idx),
+            color="navy",
+            fontsize=7,
+            alpha=0.9,
+        )
 
 
 def _draw_equipment_ski_pole(
@@ -252,6 +243,20 @@ def _draw_equipment_ski_pole(
             color=pole_color,
             linewidth=2.4,
             linestyle=linestyle,
+        )
+
+    # Draw equipment point indices and short labels.
+    for idx, p in enumerate(equip_obj):
+        label = EQUIP_LABELS[idx] if idx < len(EQUIP_LABELS) else f"pt{idx}"
+        text_color = ski_color if idx < 4 else pole_color
+        ax.text(
+            float(p[0]),
+            float(p[1]),
+            float(p[2]),
+            f"{idx}:{label}",
+            color=text_color,
+            fontsize=7,
+            alpha=0.95,
         )
 
 
@@ -471,7 +476,7 @@ def _render_one_figure(
     ax1.set_title("frame")
     ax1.axis("off")
 
-    # Use SAM3D body as the skeleton shown in the GT panel.
+    # Use Unity body as the skeleton shown in the GT panel.
     gt_human = human_pred_3d
 
     gt_xyz_for_scale = [gt_human]
@@ -587,7 +592,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-08/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-10/fold_0/checkpoints/fold_0"
         ),
         help="Checkpoint directory containing *.ckpt",
     )
@@ -684,25 +689,22 @@ def main() -> None:
     )
 
     for sample_idx, sample in enumerate(split_items[:max_samples]):
+
         sample_dict = asdict(sample) if not isinstance(sample, dict) else sample
 
         cam1_frames_dir = Path(str(sample_dict["cam1_frames_dir"]))
-        sam3d_cam1_kpt3d_dir = Path(str(sample_dict["sam3d_cam1_kpt3d_dir"]))
+        unity_cam1_kpt3d_dir = Path(str(sample_dict.get("unity_cam1_kpt3d_dir", "")))
 
         frame_map = _build_idx_file_map(cam1_frames_dir, ["*.png", "*.jpg", "*.jpeg"])
-        sam3d_map = _build_idx_file_map(sam3d_cam1_kpt3d_dir, ["kpt3d_*.npy", "*.npy"])
-
-        common_indices = sorted(set(frame_map.keys()) & set(sam3d_map.keys()))
-        if not common_indices:
-            print(f"[WARN] no common frame indices for sample {sample_idx}, skip")
-            continue
-
-        picked_indices = common_indices[::stride][:max_frames]
+        unity_input_map = _build_idx_file_map(
+            unity_cam1_kpt3d_dir, ["frame_*.npy", "kpt3d_*.npy", "*.npy"]
+        )
 
         person_id = str(sample_dict.get("person_id", "unknown"))
         action_id = str(sample_dict.get("action_id", "unknown"))
         cam1_id = str(sample_dict.get("cam1_id", "unknown"))
         cam2_id = str(sample_dict.get("cam2_id", "unknown"))
+        gender = "female" if "female" in person_id.lower() else "male"
         sample_tag = (
             f"sample_{sample_idx:03d}_{person_id}_{action_id}_{cam1_id}_{cam2_id}"
         )
@@ -726,6 +728,19 @@ def main() -> None:
                 gt_character_map = _build_idx_file_map(
                     Path(str(character_dir)), ["frame_*.npy", "*.npy"]
                 )
+
+        # Fallback: when unity_cam1_kpt3d_dir is unavailable, use character GT directory.
+        if not unity_input_map and gt_character_map:
+            unity_input_map = dict(gt_character_map)
+
+        common_indices = sorted(set(frame_map.keys()) & set(unity_input_map.keys()))
+        if not common_indices:
+            print(
+                f"[WARN] no common frame indices between frame and Unity 3D for sample {sample_idx}, skip"
+            )
+            continue
+
+        picked_indices = common_indices[::stride][:max_frames]
 
         ski_gt_idx = [
             int(x) for x in list(getattr(cfg.pose2equip, "ski_gt_idx", [1, 2, 4, 5]))
@@ -758,14 +773,14 @@ def main() -> None:
 
         for frame_idx in picked_indices:
             frame_path = frame_map[frame_idx]
-            sam3d_path = sam3d_map[frame_idx]
+            unity_human_path = unity_input_map[frame_idx]
 
             frame_rgb = _read_rgb(frame_path)
-            human_3d_raw = np.asarray(np.load(sam3d_path), dtype=np.float32)
+            human_3d_raw = np.asarray(np.load(unity_human_path), dtype=np.float32)
             human_pred_3d = _ensure_joint_count(
-                filter_sam3d_body_kpts(human_3d_raw),
+                filter_unity_kpts(human_3d_raw, flag="3d", gender=gender),
                 expected_joints,
-                source="SAM3D human",
+                source="Unity human input",
             )
 
             human_gt_3d: Optional[np.ndarray] = None
@@ -773,9 +788,9 @@ def main() -> None:
                 human_gt_raw = np.asarray(
                     np.load(gt_character_map[frame_idx]), dtype=np.float32
                 )
-                human_gt_raw = _rotate_x_180_deg(human_gt_raw)
+                # human_gt_raw = _rotate_x_180_deg(human_gt_raw)
                 human_gt_3d = _ensure_joint_count(
-                    filter_unity_kpts(human_gt_raw),
+                    filter_unity_kpts(human_gt_raw, flag="3d", gender=gender),
                     expected_joints,
                     source="Unity GT human",
                 )
@@ -812,8 +827,7 @@ def main() -> None:
                 pole_gt_raw = np.asarray(
                     np.load(gt_pole_map[frame_idx]), dtype=np.float32
                 )
-                ski_gt_raw = _rotate_x_180_deg(ski_gt_raw)
-                pole_gt_raw = _rotate_x_180_deg(pole_gt_raw)
+
                 try:
                     gt_obj = _compose_gt_equipment_points(
                         ski_kpt3d=ski_gt_raw,
@@ -875,7 +889,7 @@ def main() -> None:
                 )
                 if sam_metrics:
                     _sample_log(
-                        f"[DIAG] sample={sample_idx} frame={frame_idx} anchor consistency with SAM human: {sam_metrics}"
+                        f"[DIAG] sample={sample_idx} frame={frame_idx} anchor consistency with Unity human input: {sam_metrics}"
                     )
                 if gt_metrics:
                     _sample_log(
@@ -899,7 +913,7 @@ def main() -> None:
             pred_payload = {
                 "frame_index": int(frame_idx),
                 "frame_path": str(frame_path),
-                "sam3d_cam1_kpt3d_path": str(sam3d_path),
+                "unity_cam1_kpt3d_path": str(unity_human_path),
                 "equipment_labels": EQUIP_LABELS,
                 "pred_object_3d": pred_obj.tolist(),
                 "pred_directions": directions.tolist(),

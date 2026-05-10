@@ -56,33 +56,6 @@ def symmetry_loss(pred_obj):
     loss += torch.abs(left_pole_len.mean() - right_pole_len.mean())
     return loss
 
-
-def attachment_loss(pred_obj, human_3d, idx):
-    """Keep equipment anchors close to body anchors.
-
-    Constraints:
-    - ski center -> ankle
-    - pole grip  -> wrist
-    """
-    # human_3d: [B, J, 3], pred_obj: [B, 8, 3]
-    left_ankle = human_3d[:, idx["left_ankle"]]
-    right_ankle = human_3d[:, idx["right_ankle"]]
-    left_wrist = human_3d[:, idx["left_wrist"]]
-    right_wrist = human_3d[:, idx["right_wrist"]]
-
-    left_ski_center = 0.5 * (pred_obj[:, 0] + pred_obj[:, 1])
-    right_ski_center = 0.5 * (pred_obj[:, 2] + pred_obj[:, 3])
-    left_pole_grip = pred_obj[:, 4]
-    right_pole_grip = pred_obj[:, 6]
-
-    loss = 0.0
-    loss += torch.norm(left_ski_center - left_ankle, dim=-1).mean()
-    loss += torch.norm(right_ski_center - right_ankle, dim=-1).mean()
-    loss += torch.norm(left_pole_grip - left_wrist, dim=-1).mean()
-    loss += torch.norm(right_pole_grip - right_wrist, dim=-1).mean()
-    return loss
-
-
 def equipment_segment_lengths(obj: torch.Tensor) -> torch.Tensor:
     """Return 4 segment lengths from equipment keypoints.
 
@@ -199,10 +172,7 @@ class Pose2EquipTrainer(LightningModule):
 
         self.model = Pose2EquipNet(
             num_joints=15,
-            left_ankle_idx=args.pose2equip.left_ankle_idx,
-            right_ankle_idx=args.pose2equip.right_ankle_idx,
-            left_wrist_idx=args.pose2equip.left_wrist_idx,
-            right_wrist_idx=args.pose2equip.right_wrist_idx,
+            num_equip_kpts=8,
             target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
             dino_model_name=str(
                 getattr(
@@ -219,8 +189,6 @@ class Pose2EquipTrainer(LightningModule):
 
         self.loss_w_sym = float(getattr(args.pose2equip, "loss_w_sym", 0.03))
         self.loss_w_len_abs = float(getattr(args.pose2equip, "loss_w_len_abs", 0.2))
-        self.loss_w_dino_feat = float(getattr(args.pose2equip, "loss_w_dino_feat", 0.1))
-        self.loss_w_temp = float(getattr(args.pose2equip, "loss_w_temp", 0.01))
 
         # GT point reorder for object_3d target (8 points):
         # [left_ski_tip, left_ski_tail, right_ski_tip, right_ski_tail,
@@ -229,12 +197,6 @@ class Pose2EquipTrainer(LightningModule):
         self.ski_gt_idx = list(getattr(args.pose2equip, "ski_gt_idx", [1, 2, 4, 5]))
         self.pole_gt_idx = list(getattr(args.pose2equip, "pole_gt_idx", [0, 1, 2, 3]))
 
-        self.idx = {
-            "left_ankle": args.pose2equip.left_ankle_idx,
-            "right_ankle": args.pose2equip.right_ankle_idx,
-            "left_wrist": args.pose2equip.left_wrist_idx,
-            "right_wrist": args.pose2equip.right_wrist_idx,
-        }
         self.test_outputs: List[Dict[str, Any]] = []
         self.test_save_dir = Path(str(args.log_path)) / "pose_analysis"
 
@@ -259,8 +221,6 @@ class Pose2EquipTrainer(LightningModule):
         return torch.cat([ski_obj, pole_obj], dim=1)
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
-        # 只用cam 1 的结果进行训练
-        human_3d = batch["kpt3d_sam"]["character_cam1"].float()  # [B, t, J, 3]
         human_frame = None
         if isinstance(batch.get("frames"), dict) and "cam1" in batch["frames"]:
             human_frame = batch["frames"]["cam1"].float()  # b, c, t, h, w
@@ -269,11 +229,12 @@ class Pose2EquipTrainer(LightningModule):
         _gt = batch["kpt3d_gt"]
         pole_gt = _gt["pole"].float()  # [B, t, 4, 3]
         ski_gt = _gt["ski"].float()  # [B, t, 6, 3]
+        human_3d_gt = _gt["character"].float()  # [B, t, J, 3]
 
-        if human_3d.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
-            bsz, t_steps = human_3d.shape[:2]
-            human_3d = human_3d.reshape(
-                bsz * t_steps, human_3d.shape[2], human_3d.shape[3]
+        if human_3d_gt.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
+            bsz, t_steps = human_3d_gt.shape[:2]
+            human_3d_gt = human_3d_gt.reshape(
+                bsz * t_steps, human_3d_gt.shape[2], human_3d_gt.shape[3]
             )
             pole_gt = pole_gt.reshape(bsz * t_steps, pole_gt.shape[2], pole_gt.shape[3])
             ski_gt = ski_gt.reshape(bsz * t_steps, ski_gt.shape[2], ski_gt.shape[3])
@@ -292,7 +253,7 @@ class Pose2EquipTrainer(LightningModule):
         object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
 
         out = self.model(
-            human_3d,
+            human_3d_gt,
             human_frame=human_frame,
         )
         pred_obj = out["object_3d"]
@@ -300,12 +261,8 @@ class Pose2EquipTrainer(LightningModule):
         l3d = mpjpe(pred_obj, object_gt)
         lsymmetry = symmetry_loss(pred_obj)
         l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
-        gt_len = equipment_segment_lengths(object_gt)
-        l_dino_feat = torch.nn.functional.smooth_l1_loss(
-            out["dino_lengths"].squeeze(-1),
-            gt_len,
-        )
         pred_len = equipment_segment_lengths(pred_obj)
+        gt_len = equipment_segment_lengths(object_gt)
 
         pred_ski_len_mean = 0.5 * (pred_len[:, 0].mean() + pred_len[:, 1].mean())
         pred_pole_len_mean = 0.5 * (pred_len[:, 2].mean() + pred_len[:, 3].mean())
@@ -313,16 +270,15 @@ class Pose2EquipTrainer(LightningModule):
         gt_pole_len_mean = 0.5 * (gt_len[:, 2].mean() + gt_len[:, 3].mean())
 
         # Final objective:
-        #   L = L3D + w_sym * Lsymmetry + w_len_abs * LlenAbs + w_dino_feat * LdinoFeat
+        #   L = L3D + w_sym * Lsymmetry + w_len_abs * LlenAbs
         # L3D is the main supervision term; others are geometric regularizers.
         loss = (
             l3d
             + self.loss_w_sym * lsymmetry
             + self.loss_w_len_abs * l_len_abs
-            + self.loss_w_dino_feat * l_dino_feat
         )
 
-        batch_size = human_3d.shape[0]
+        batch_size = human_3d_gt.shape[0]
         self.log(
             f"{stage}/loss",
             loss,
@@ -361,27 +317,6 @@ class Pose2EquipTrainer(LightningModule):
             batch_size=batch_size,
         )
         self.log(
-            f"{stage}/Ldino_feat",
-            l_dino_feat,
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/len_mean",
-            out["lengths"].mean(),
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/len_std",
-            out["lengths"].std(unbiased=False),
-            on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
             f"{stage}/pred_ski_len_mean",
             pred_ski_len_mean,
             on_step=False,
@@ -413,11 +348,9 @@ class Pose2EquipTrainer(LightningModule):
         if stage == "test":
             self.test_outputs.append(
                 {
-                    "human_3d": human_3d.detach().cpu(),
+                    "human_3d": human_3d_gt.detach().cpu(),
                     "pred_obj": pred_obj.detach().cpu(),
                     "gt_obj": object_gt.detach().cpu(),
-                    "directions": out["directions"].detach().cpu(),
-                    "lengths": out["lengths"].detach().cpu(),
                 }
             )
 
@@ -452,10 +385,6 @@ class Pose2EquipTrainer(LightningModule):
             "human_3d": torch.cat([x["human_3d"] for x in self.test_outputs], dim=0),
             "pred_obj": torch.cat([x["pred_obj"] for x in self.test_outputs], dim=0),
             "gt_obj": torch.cat([x["gt_obj"] for x in self.test_outputs], dim=0),
-            "directions": torch.cat(
-                [x["directions"] for x in self.test_outputs], dim=0
-            ),
-            "lengths": torch.cat([x["lengths"] for x in self.test_outputs], dim=0),
         }
         save_file = self.test_save_dir / "pose2equip_outputs.pt"
         torch.save(payload, save_file)

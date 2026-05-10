@@ -31,10 +31,13 @@ from torchvision.transforms import (
     Resize,
 )
 
-from project.dataloader.whole_video_dataset_dual_view import whole_video_dataset as whole_video_dataset_dual
-from project.dataloader.whole_video_dataset_single_view import (
+from project.dataloader.whole_video_dataset_dual_view import (
+    whole_video_dataset as whole_video_dataset_dual,
+)
+from project.dataloader.unity_dataset_single_view import (
     whole_video_dataset as whole_video_dataset_single,
 )
+
 from project.dataloader.utils import Div255
 
 
@@ -125,7 +128,9 @@ class UnityDataModule(LightningDataModule):
     def _temporal_select_indices(src_t: int, dst_t: int) -> torch.Tensor:
         """Uniformly sample temporal indices from src_t to dst_t."""
         if src_t <= 0 or dst_t <= 0:
-            raise ValueError(f"src_t and dst_t must be > 0, got src_t={src_t}, dst_t={dst_t}")
+            raise ValueError(
+                f"src_t and dst_t must be > 0, got src_t={src_t}, dst_t={dst_t}"
+            )
         if src_t == dst_t:
             return torch.arange(src_t, dtype=torch.long)
         return torch.linspace(0, src_t - 1, steps=dst_t).round().long()
@@ -252,9 +257,7 @@ class UnityDataModule(LightningDataModule):
                 for key, value in sample["kpt3d_gt"].items():
                     if key not in gt3d_variant_lists:
                         gt3d_variant_lists[key] = []
-                    gt3d_variant_lists[key].append(
-                        value
-                    )
+                    gt3d_variant_lists[key].append(value)
 
             idx = sample.get("frame_indices")
             if isinstance(idx, torch.Tensor):
@@ -276,25 +279,33 @@ class UnityDataModule(LightningDataModule):
                 raise ValueError("Encountered empty frame_indices in batch.")
 
             frame_indices = [
-                self._resample_time_by_index(idx, target_t=target_t, time_dim=0, name="frame_indices")
+                self._resample_time_by_index(
+                    idx, target_t=target_t, time_dim=0, name="frame_indices"
+                )
                 for idx in frame_indices
             ]
 
             if has_frames:
                 frames_cam1 = [
-                    self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="frames/cam1")
+                    self._resample_time_by_index(
+                        x, target_t=target_t, time_dim=1, name="frames/cam1"
+                    )
                     for x in frames_cam1
                 ]
                 if has_cam2_frames and frames_cam2:
                     frames_cam2 = [
-                        self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="frames/cam2")
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=1, name="frames/cam2"
+                        )
                         for x in frames_cam2
                     ]
 
             if has_masks:
                 if masks_ski:
                     masks_ski = [
-                        self._resample_time_by_index(x, target_t=target_t, time_dim=1, name="masks/ski")
+                        self._resample_time_by_index(
+                            x, target_t=target_t, time_dim=1, name="masks/ski"
+                        )
                         for x in masks_ski
                     ]
                 if masks_ski_pole:
@@ -316,14 +327,20 @@ class UnityDataModule(LightningDataModule):
                 if sam2d_cam1:
                     sam2d_cam1 = [
                         self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=0, name="kpt2d_sam/character_cam1"
+                            x,
+                            target_t=target_t,
+                            time_dim=0,
+                            name="kpt2d_sam/character_cam1",
                         )
                         for x in sam2d_cam1
                     ]
                 if sam2d_cam2:
                     sam2d_cam2 = [
                         self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=0, name="kpt2d_sam/character_cam2"
+                            x,
+                            target_t=target_t,
+                            time_dim=0,
+                            name="kpt2d_sam/character_cam2",
                         )
                         for x in sam2d_cam2
                     ]
@@ -339,14 +356,20 @@ class UnityDataModule(LightningDataModule):
                 if sam3d_cam1:
                     sam3d_cam1 = [
                         self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=0, name="kpt3d_sam/character_cam1"
+                            x,
+                            target_t=target_t,
+                            time_dim=0,
+                            name="kpt3d_sam/character_cam1",
                         )
                         for x in sam3d_cam1
                     ]
                 if sam3d_cam2:
                     sam3d_cam2 = [
                         self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=0, name="kpt3d_sam/character_cam2"
+                            x,
+                            target_t=target_t,
+                            time_dim=0,
+                            name="kpt3d_sam/character_cam2",
                         )
                         for x in sam3d_cam2
                     ]
@@ -445,7 +468,9 @@ class UnityDataModule(LightningDataModule):
         """
 
         dataset_builder = (
-            whole_video_dataset_single if self._is_single_view else whole_video_dataset_dual
+            whole_video_dataset_single
+            if self._is_single_view
+            else whole_video_dataset_dual
         )
         if self._is_single_view:
             effective_load_frames = self._load_frames
