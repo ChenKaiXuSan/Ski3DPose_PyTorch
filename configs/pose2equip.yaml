@@ -52,19 +52,17 @@ data:
   load_3d_kpt: true
   load_mask: false
 
+  time_window: 16
+
   num_workers: 16
   batch_size: 32
 
 model:
   backbone: stgcn # pose2equip, stgcn, 3dcnn
 
-  ablation_study: single # choices=[single, multi], help='the ablation study of the model, single means only one layer is used for fusion, multi means multiple layers are used for fusion'
-
 train:
   # Training config
   max_epochs: 50 # numer of epochs of training
-
-  view: single
 
   gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
   fold: 0 # the fold number for cross validation
@@ -73,7 +71,7 @@ train:
 pose2equip:
   num_joints: 15
   dino_model_name: facebook/dinov2-base
-  dino_freeze: false
+  dino_freeze: true
   dino_image_size: 224
 
   loss_w_sym: 0.03
@@ -89,38 +87,6 @@ pose2equip:
   # GT点索引，应该和unity记录的GT点顺序一致，或者至少保证能正确选取对应的点进行训练
   ski_gt_idx: [1, 2, 4, 5] # ski_l_front, ski_l_back, ski_r_front, ski_r_back
   pole_gt_idx: [0, 1, 2, 3] # pole_l_handle, pole_l_tip, pole_r_handle, pole_r_tip
-
-dual2pose:
-  num_joints: 15
-  weight_decay: 0.01
-
-  # Pre-align right-view 3D pose to left-view coordinates before fusion.
-  rigid_align_right_to_left: true
-  rigid_align_ref_variant: character
-
-  d_model: 256
-  n_layers: 4
-  use_conf: true
-  predict_logvar: false
-
-  # frame branch
-  use_dino_features: false
-  dino_model_name: facebook/dinov2-base
-  dino_freeze: false
-  dino_image_size: 224
-  dino_feature_dim: 768
-
-  lambda_view_recon: 0.05
-  lambda_alpha_balance: 0.02
-  lambda_alpha_entropy: 0.005
-  lambda_p0_supervise: 0.2
-
-  lambda_mpjpe: 1.0
-  lambda_bone: 0.1
-  lambda_vel: 0.05
-  lambda_acc: 0.02
-  lambda_agree: 0.1
-  lambda_bone_stab: 0.05
 
 experiment: ${model.backbone} # the experiment name, used for log path
 log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}

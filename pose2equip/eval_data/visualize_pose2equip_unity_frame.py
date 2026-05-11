@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-"""
-File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/eval_true_data/visualize_pose2equip_unity_frame copy.py
-Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/eval_true_data
-Created Date: Monday May 11th 2026
-Author: Kaixu Chen
------
-Comment:
-
-Have a good code time :)
------
-Last Modified: Monday May 11th 2026 12:39:38 pm
-Modified By: the developer formerly known as Kaixu Chen at <chenkaixusan@gmail.com>
------
-Copyright (c) 2026 The University of Tsukuba
------
-HISTORY:
-Date      	By	Comments
-----------	---	---------------------------------------------------------
-"""
-
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
 
 from __future__ import annotations
 
@@ -37,6 +15,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +26,7 @@ from project.map_config import (
     FILTER_SKELETON_CONNECTIONS,
     filter_unity_kpts,
 )
-from project.models.pose2equip_net import STGCNBaselineNet
+from project.models.pose2equip_net import Pose2EquipNet
 from project.dataloader.canonicalize import (
     canonicalize_pose_numpy,
     apply_canonical_transform_numpy,
@@ -154,6 +133,23 @@ def _read_rgb(path: Path) -> np.ndarray:
     if bgr is None:
         raise RuntimeError(f"Failed to read image: {path}")
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def _frame_to_model_tensor(
+    frame_rgb: np.ndarray, image_size: int, device: torch.device
+) -> torch.Tensor:
+    x = torch.from_numpy(np.ascontiguousarray(frame_rgb, dtype=np.float32)).permute(
+        2, 0, 1
+    )
+    x = x / 255.0
+    x = x.unsqueeze(0)
+    x = F.interpolate(
+        x, size=(image_size, image_size), mode="bilinear", align_corners=False
+    )
+    mean = x.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = x.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    x = (x - mean) / std
+    return x.to(device)
 
 
 def _ensure_joint_count(
@@ -571,62 +567,10 @@ def _render_one_figure(
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
 
-    # Also save 3-view (front/side/top) figure for easier spatial inspection.
-    view_specs: List[Tuple[str, float, float]] = [
-        ("front", 12.0, -90.0),
-        ("side", 12.0, 0.0),
-        ("top", 90.0, -90.0),
-    ]
-    fig3 = plt.figure(figsize=(18, 10))
 
-    for col, (view_name, elev, azim) in enumerate(view_specs, start=1):
-        ax_gt = fig3.add_subplot(2, 3, col, projection="3d")
-        _draw_human_skeleton_3d(ax_gt, gt_human)
-        if gt_segments is not None:
-            _draw_gt_segments_by_config(ax_gt, gt_segments)
-        elif gt_obj is not None:
-            _draw_equipment_ski_pole(
-                ax_gt,
-                gt_obj,
-                ski_color="tab:green",
-                pole_color="tab:olive",
-                label_prefix="gt",
-                linestyle="-",
-            )
-        _set_equal_3d_axes(ax_gt, gt_xyz_ref)
-        ax_gt.view_init(elev=elev, azim=azim)
-        ax_gt.set_title(f"gt-{view_name}")
-        ax_gt.set_xlabel("X")
-        ax_gt.set_ylabel("Y")
-        ax_gt.set_zlabel("Z")
-
-        ax_pred = fig3.add_subplot(2, 3, col + 3, projection="3d")
-        _draw_human_skeleton_3d(ax_pred, human_pred_3d)
-        _draw_equipment_ski_pole(
-            ax_pred,
-            pred_obj,
-            ski_color="crimson",
-            pole_color="goldenrod",
-            label_prefix="pred",
-            linestyle="-",
-        )
-        _set_equal_3d_axes(ax_pred, pred_xyz_ref)
-        ax_pred.view_init(elev=elev, azim=azim)
-        ax_pred.set_title(f"pred-{view_name}")
-        ax_pred.set_xlabel("X")
-        ax_pred.set_ylabel("Y")
-        ax_pred.set_zlabel("Z")
-
-    fig3.suptitle(f"{title} | 3 views")
-    fig3.tight_layout()
-    out_3views = out_path.with_name(f"{out_path.stem}_3views{out_path.suffix}")
-    fig3.savefig(out_3views, dpi=180)
-    plt.close(fig3)
-
-
-def _load_stgcn_from_ckpt(
+def _load_pose2equip_from_ckpt(
     ckpt_path: Path, cfg: Any, device: torch.device
-) -> STGCNBaselineNet:
+) -> Pose2EquipNet:
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     state_dict = ckpt.get("state_dict", ckpt)
 
@@ -637,11 +581,12 @@ def _load_stgcn_from_ckpt(
         else:
             model_state[key] = value
 
-    model = STGCNBaselineNet(
-        num_joints=15,
+    model = Pose2EquipNet(
+        num_joints=int(getattr(cfg.pose2equip, "num_joints", 15)),
         target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
-        hidden_dim=256,
-        num_equip_kpts=8,
+        dino_model_name=str(cfg.pose2equip.dino_model_name),
+        dino_freeze=bool(getattr(cfg.pose2equip, "dino_freeze", True)),
+        dino_image_size=int(getattr(cfg.pose2equip, "dino_image_size", 224)),
     )
     model.load_state_dict(model_state, strict=True)
     model.eval()
@@ -673,7 +618,7 @@ def main() -> None:
         "--ckpt-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/stgcn/2026-05-11/fold_0/checkpoints/fold_0"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/pose2equip/2026-05-10/fold_0/checkpoints/fold_0"
         ),
         help="Checkpoint directory containing *.ckpt",
     )
@@ -726,7 +671,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=Path(
-            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/stgcn/stgcn_unity_frame"
+            "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_true_data/pose2equip/pose2equip_unity_frame"
         ),
         help="Output root directory",
     )
@@ -744,10 +689,12 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint dir not found: {args.ckpt_dir}")
 
     cfg = OmegaConf.load(str(args.config))
+    image_size = int(cfg.data.img_size)
+
     ckpt_path = _select_best_ckpt(args.ckpt_dir)
     print(f"[INFO] Best ckpt: {ckpt_path}")
 
-    model = _load_stgcn_from_ckpt(ckpt_path, cfg, device)
+    model = _load_pose2equip_from_ckpt(ckpt_path, cfg, device)
     expected_joints = int(getattr(model.pose_encoder, "num_joints", 15))
 
     split_items = _load_fold_items(cfg, int(args.fold), args.split)
@@ -889,9 +836,12 @@ def main() -> None:
                 )
 
             human_3d_t = torch.from_numpy(human_pred_3d).unsqueeze(0).to(device)
+            frame_t = _frame_to_model_tensor(
+                frame_rgb, image_size=image_size, device=device
+            )
 
             with torch.no_grad():
-                out = model(human_3d=human_3d_t)
+                out = model(human_3d=human_3d_t, human_frame=frame_t)
 
             pred_obj_raw = out["object_3d"][0].detach().cpu().numpy().astype(np.float32)
             # Apply same canonicalize transform to predicted equipment points

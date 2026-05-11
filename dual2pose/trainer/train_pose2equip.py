@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 # Loss
 # =========================
 def mpjpe(pred, gt):
-    """Mean per-point Euclidean distance on object keypoints."""
+    """Mean per-point Euclidean distance on object keypoints.
+
+    Supports [B, 8, 3] and [B, T, 8, 3].
+    """
     return torch.norm(pred - gt, dim=-1).mean()
 
 
@@ -29,7 +32,13 @@ def length_variance_loss(pred_obj):
     We compute 4 equipment lengths (left/right ski, left/right pole) and
     minimize their per-batch variance for geometric stability.
     """
-    # pred_obj: [B, 8, 3]
+    if pred_obj.ndim == 4:
+        pred_obj = pred_obj.reshape(-1, pred_obj.shape[2], pred_obj.shape[3])
+    elif pred_obj.ndim != 3:
+        raise ValueError(
+            f"Expected pred_obj shape [B,8,3] or [B,T,8,3], got {tuple(pred_obj.shape)}"
+        )
+
     left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
     right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
     left_pole_len = torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
@@ -44,36 +53,41 @@ def length_variance_loss(pred_obj):
 
 
 def symmetry_loss(pred_obj):
-    """Encourage left/right symmetry by matching mean lengths."""
-    # pred_obj: [B, 8, 3]
-    left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
-    right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
-    left_pole_len = torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
-    right_pole_len = torch.norm(pred_obj[:, 6] - pred_obj[:, 7], dim=-1)
+    """Encourage left/right symmetry by matching mean lengths.
+
+    pred_obj: b, t, 4, 2, 3
+    """
+
+    left_ski_len = torch.norm(pred_obj[:, :, 0, 0] - pred_obj[:, :, 0, 1], dim=-1)
+    right_ski_len = torch.norm(pred_obj[:, :, 1, 0] - pred_obj[:, :, 1, 1], dim=-1)
+    left_pole_len = torch.norm(pred_obj[:, :, 2, 0] - pred_obj[:, :, 2, 1], dim=-1)
+    right_pole_len = torch.norm(pred_obj[:, :, 3, 0] - pred_obj[:, :, 3, 1], dim=-1)
 
     loss = 0.0
     loss += torch.abs(left_ski_len.mean() - right_ski_len.mean())
     loss += torch.abs(left_pole_len.mean() - right_pole_len.mean())
     return loss
 
+
 def equipment_segment_lengths(obj: torch.Tensor) -> torch.Tensor:
     """Return 4 segment lengths from equipment keypoints.
 
-    Output order: [left_ski, right_ski, left_pole, right_pole], shape [B, 4].
+    obj: b, t, 4, 2, 3
+
+    Supports [B, 8, 3] -> [B, 4] and [B, T, 8, 3] -> [B, T, 4].
     """
-    if obj.ndim != 3 or obj.shape[1] != 8 or obj.shape[2] != 3:
-        raise ValueError(f"Expected object shape [B,8,3], got {tuple(obj.shape)}")
+    
+    _ski = obj[:, :, :2, :, :]  # [B, T, 2, 2, 3]
+    _pole = obj[:, :, 2:, :, :]  # [B, T, 2, 2, 3]
+
+    left_ski_len = torch.norm(_ski[:, :, 0, 0] - _ski[:, :, 0, 1], dim=-1)
+    right_ski_len = torch.norm(_ski[:, :, 1, 0] - _ski[:, :, 1, 1], dim=-1)
+    left_pole_len = torch.norm(_pole[:, :, 0, 0] - _pole[:, :, 0, 1], dim=-1)
+    right_pole_len = torch.norm(_pole[:, :, 1, 0] - _pole[:, :, 1, 1], dim=-1)
 
     return torch.stack(
-        [
-            torch.norm(obj[:, 0] - obj[:, 1], dim=-1),
-            torch.norm(obj[:, 2] - obj[:, 3], dim=-1),
-            torch.norm(obj[:, 4] - obj[:, 5], dim=-1),
-            torch.norm(obj[:, 6] - obj[:, 7], dim=-1),
-        ],
-        dim=-1,
+        [left_ski_len, right_ski_len, left_pole_len, right_pole_len], dim=-1
     )
-
 
 def absolute_length_loss(pred_obj: torch.Tensor, gt_obj: torch.Tensor) -> torch.Tensor:
     """Supervise absolute equipment lengths with SmoothL1.
@@ -150,10 +164,10 @@ def evaluate_pose_metrics(pred_obj: np.ndarray, gt_obj: np.ndarray) -> Dict[str,
 
     # Per-object metrics
     # Points mapping: 0,1=left_ski, 2,3=right_ski, 4,5=left_pole, 6,7=right_pole
-    left_ski_err = np.linalg.norm(pred_obj[:, :2] - gt_obj[:, :2], axis=2).mean()
-    right_ski_err = np.linalg.norm(pred_obj[:, 2:4] - gt_obj[:, 2:4], axis=2).mean()
-    left_pole_err = np.linalg.norm(pred_obj[:, 4:6] - gt_obj[:, 4:6], axis=2).mean()
-    right_pole_err = np.linalg.norm(pred_obj[:, 6:8] - gt_obj[:, 6:8], axis=2).mean()
+    left_ski_err = np.linalg.norm(pred_obj[:, :, 0] - gt_obj[:, :, 0], axis=2).mean()
+    right_ski_err = np.linalg.norm(pred_obj[:, :, 1] - gt_obj[:, :, 1], axis=2).mean()
+    left_pole_err = np.linalg.norm(pred_obj[:, :, 2] - gt_obj[:, :, 2], axis=2).mean()
+    right_pole_err = np.linalg.norm(pred_obj[:, :, 3] - gt_obj[:, :, 3], axis=2).mean()
 
     return {
         "mpjpe": float(mpjpe),
@@ -172,7 +186,6 @@ class Pose2EquipTrainer(LightningModule):
 
         self.model = Pose2EquipNet(
             num_joints=15,
-            num_equip_kpts=8,
             target_skeleton_connections_idx=FILTER_SKELETON_CONNECTIONS,
             dino_model_name=str(
                 getattr(
@@ -182,7 +195,6 @@ class Pose2EquipTrainer(LightningModule):
                 )
             ),
             dino_freeze=bool(getattr(args.pose2equip, "dino_freeze", True)),
-            dino_image_size=int(getattr(args.pose2equip, "dino_image_size", 224)),
         )
         self.lr = float(getattr(args.loss, "lr", 0.001))
         self.weight_decay = float(getattr(args.loss, "weight_decay", 0.01))
@@ -202,28 +214,46 @@ class Pose2EquipTrainer(LightningModule):
 
     @staticmethod
     def _select_points(x: torch.Tensor, idx: List[int], name: str) -> torch.Tensor:
-        # x: B, J, 3
-        if x.ndim != 3 or x.shape[-1] != 3:
-            raise ValueError(f"Expected {name} shape [B, J, 3], got {tuple(x.shape)}")
-        max_idx = x.shape[1] - 1
-        if any(i < 0 or i > max_idx for i in idx):
-            raise ValueError(
-                f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
-            )
-        return x[:, idx, :]
+        # x: [B, J, 3] or [B, T, J, 3]
+        if x.ndim == 3:
+            if x.shape[-1] != 3:
+                raise ValueError(
+                    f"Expected {name} shape [B, J, 3], got {tuple(x.shape)}"
+                )
+            max_idx = x.shape[1] - 1
+            if any(i < 0 or i > max_idx for i in idx):
+                raise ValueError(
+                    f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
+                )
+            return x[:, idx, :]
+        if x.ndim == 4:
+            if x.shape[-1] != 3:
+                raise ValueError(
+                    f"Expected {name} shape [B, T, J, 3], got {tuple(x.shape)}"
+                )
+            max_idx = x.shape[2] - 1
+            if any(i < 0 or i > max_idx for i in idx):
+                raise ValueError(
+                    f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
+                )
+            return x[:, :, idx, :]
+        raise ValueError(f"Unexpected {name} ndim: {x.ndim}")
 
     def _build_object_gt(
         self, pole_gt: torch.Tensor, ski_gt: torch.Tensor
     ) -> torch.Tensor:
-        ski_obj = self._select_points(ski_gt, self.ski_gt_idx, "ski_gt")  # B, 4, 3
-        pole_obj = self._select_points(pole_gt, self.pole_gt_idx, "pole_gt")  # B, 4, 3
+        ski_obj = self._select_points(ski_gt, self.ski_gt_idx, "ski_gt")
+        pole_obj = self._select_points(pole_gt, self.pole_gt_idx, "pole_gt")
 
-        return torch.cat([ski_obj, pole_obj], dim=1)
+        return torch.stack([ski_obj, pole_obj], dim=3)
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         human_frame = None
         if isinstance(batch.get("frames"), dict) and "cam1" in batch["frames"]:
-            human_frame = batch["frames"]["cam1"].float()  # b, c, t, h, w
+            human_frame = batch["frames"]["cam1"].float()  # [B, C, T, H, W]
+            human_frame = human_frame.permute(
+                0, 2, 1, 3, 4
+            ).contiguous()  # [B, T, C, H, W]
 
         # GT fron Unity
         _gt = batch["kpt3d_gt"]
@@ -231,29 +261,12 @@ class Pose2EquipTrainer(LightningModule):
         ski_gt = _gt["ski"].float()  # [B, t, 6, 3]
         human_3d_gt = _gt["character"].float()  # [B, t, J, 3]
 
-        if human_3d_gt.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
-            bsz, t_steps = human_3d_gt.shape[:2]
-            human_3d_gt = human_3d_gt.reshape(
-                bsz * t_steps, human_3d_gt.shape[2], human_3d_gt.shape[3]
-            )
-            pole_gt = pole_gt.reshape(bsz * t_steps, pole_gt.shape[2], pole_gt.shape[3])
-            ski_gt = ski_gt.reshape(bsz * t_steps, ski_gt.shape[2], ski_gt.shape[3])
-            if human_frame is not None:
-                if human_frame.ndim != 5:
-                    raise ValueError(
-                        f"Expected human_frame shape [B,C,T,H,W], got {tuple(human_frame.shape)}"
-                    )
-                human_frame = human_frame.permute(0, 2, 1, 3, 4).reshape(
-                    bsz * t_steps,
-                    human_frame.shape[1],
-                    human_frame.shape[3],
-                    human_frame.shape[4],
-                )
-
-        object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
+        object_gt = self._build_object_gt(
+            pole_gt=pole_gt, ski_gt=ski_gt
+        )  # [B, T, 4, 2, 3]
 
         out = self.model(
-            human_3d_gt,
+            human_3d=human_3d_gt,
             human_frame=human_frame,
         )
         pred_obj = out["object_3d"]
@@ -261,22 +274,11 @@ class Pose2EquipTrainer(LightningModule):
         l3d = mpjpe(pred_obj, object_gt)
         lsymmetry = symmetry_loss(pred_obj)
         l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
-        pred_len = equipment_segment_lengths(pred_obj)
-        gt_len = equipment_segment_lengths(object_gt)
-
-        pred_ski_len_mean = 0.5 * (pred_len[:, 0].mean() + pred_len[:, 1].mean())
-        pred_pole_len_mean = 0.5 * (pred_len[:, 2].mean() + pred_len[:, 3].mean())
-        gt_ski_len_mean = 0.5 * (gt_len[:, 0].mean() + gt_len[:, 1].mean())
-        gt_pole_len_mean = 0.5 * (gt_len[:, 2].mean() + gt_len[:, 3].mean())
 
         # Final objective:
         #   L = L3D + w_sym * Lsymmetry + w_len_abs * LlenAbs
         # L3D is the main supervision term; others are geometric regularizers.
-        loss = (
-            l3d
-            + self.loss_w_sym * lsymmetry
-            + self.loss_w_len_abs * l_len_abs
-        )
+        loss = l3d + self.loss_w_sym * lsymmetry + self.loss_w_len_abs * l_len_abs
 
         batch_size = human_3d_gt.shape[0]
         self.log(
@@ -313,34 +315,6 @@ class Pose2EquipTrainer(LightningModule):
             f"{stage}/Llen_abs",
             l_len_abs,
             on_step=True,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/pred_ski_len_mean",
-            pred_ski_len_mean,
-            on_step=False,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/pred_pole_len_mean",
-            pred_pole_len_mean,
-            on_step=False,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/gt_ski_len_mean",
-            gt_ski_len_mean,
-            on_step=False,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
-        self.log(
-            f"{stage}/gt_pole_len_mean",
-            gt_pole_len_mean,
-            on_step=False,
             on_epoch=True,
             batch_size=batch_size,
         )

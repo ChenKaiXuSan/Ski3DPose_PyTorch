@@ -1,6 +1,13 @@
 {
   "configurations": [
     {
+      "name": "Python 调试程序: 当前文件",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "unity_sam3d_body",
       "type": "debugpy",
       "request": "launch",
@@ -45,7 +52,20 @@
         "data.num_workers=0",
         "data.batch_size=2",
         "train.view=single",
-        "model.backbone=stgcn"
+        "model.backbone=pose2equip",
+      ]
+    },
+    {
+      "name": "unity_train_stgcn",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pose2equip.main",
+      "python": "/opt/conda/envs/canonical_dualview_3d_pose/bin/python",
+      "args": [
+        "data.num_workers=0",
+        "data.batch_size=2",
+        "model.backbone=stgcn",
+        "data.load_frames=false"
       ]
     },
     {

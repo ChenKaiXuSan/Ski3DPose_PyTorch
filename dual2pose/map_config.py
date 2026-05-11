@@ -117,43 +117,16 @@ POLE_MAPPING = {
     3: "pole_right_tip",
 }
 
-TARGET_IDS = list(SAM3D_BODY_MAPPING.keys())
-
-ID_TO_INDEX = {jid: idx for idx, jid in enumerate(TARGET_IDS)}
-
-ANGLE_DEFS = {
-    "knee_l": (9, 11, 13),
-    "knee_r": (10, 12, 14),
-    "elbow_l": (5, 7, 62),
-    "elbow_r": (6, 8, 41),
-    "shoulder_l": (69, 5, 7),
-    "shoulder_r": (69, 6, 8),
-    "hip_l": (69, 9, 11),
-    "hip_r": (69, 10, 12),
+OBJ_MAPPING = {
+    0: "left_ski_front",
+    1: "left_ski_back",
+    2: "right_ski_front",
+    3: "right_ski_back",
+    4: "left_pole_handle",
+    5: "left_pole_tip",
+    6: "right_pole_handle",
+    7: "right_pole_tip",
 }
-
-# Skeleton connections (bone pairs) for visualization
-# Each tuple is (parent_joint_id, child_joint_id)
-# 这里是sam3d body的映射
-SAM3D_BODY_SKELETON_CONNECTIONS = [
-    # Left arm
-    (69, 5),  # neck -> shoulder_l
-    (5, 7),  # shoulder_l -> elbow_l
-    (7, 62),  # elbow_l -> hand_l
-    # Right arm
-    (69, 6),  # neck -> shoulder_r
-    (6, 8),  # shoulder_r -> elbow_r
-    (8, 41),  # elbow_r -> hand_r
-    # Spine
-    (69, 9),  # neck -> hip_l
-    (69, 10),  # neck -> hip_r
-    # Left leg
-    (9, 11),  # hip_l -> knee_l
-    (11, 13),  # knee_l -> foot_l
-    # Right leg
-    (10, 12),  # hip_r -> knee_r
-    (12, 14),  # knee_r -> foot_r
-]
 
 # Skeleton connections after filtering, represented by contiguous joint indices.
 

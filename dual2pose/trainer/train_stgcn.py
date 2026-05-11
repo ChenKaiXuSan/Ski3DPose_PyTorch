@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 # Loss
 # =========================
 def mpjpe(pred, gt):
-    """Mean per-point Euclidean distance on object keypoints."""
+    """Mean per-point Euclidean distance on object keypoints.
+    
+    Handles both [B, 8, 3] and [B, T, 8, 3] inputs.
+    """
     return torch.norm(pred - gt, dim=-1).mean()
 
 
@@ -27,12 +30,20 @@ def length_variance_loss(pred_obj):
 
     We compute 4 equipment lengths (left/right ski, left/right pole) and
     minimize their per-batch variance for geometric stability.
+    
+    Handles both [B, 8, 3] and [B, T, 8, 3] inputs.
     """
-    # pred_obj: [B, 8, 3]
-    left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
-    right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
-    left_pole_len = torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
-    right_pole_len = torch.norm(pred_obj[:, 6] - pred_obj[:, 7], dim=-1)
+    # Flatten B and T if needed
+    if pred_obj.ndim == 4:  # [B, T, 8, 3]
+        b, t = pred_obj.shape[:2]
+        pred_obj_flat = pred_obj.reshape(b * t, 8, 3)
+    else:  # [B, 8, 3]
+        pred_obj_flat = pred_obj
+    
+    left_ski_len = torch.norm(pred_obj_flat[:, 0] - pred_obj_flat[:, 1], dim=-1)
+    right_ski_len = torch.norm(pred_obj_flat[:, 2] - pred_obj_flat[:, 3], dim=-1)
+    left_pole_len = torch.norm(pred_obj_flat[:, 4] - pred_obj_flat[:, 5], dim=-1)
+    right_pole_len = torch.norm(pred_obj_flat[:, 6] - pred_obj_flat[:, 7], dim=-1)
 
     loss = 0.0
     loss += left_ski_len.var(unbiased=False)
@@ -43,12 +54,21 @@ def length_variance_loss(pred_obj):
 
 
 def symmetry_loss(pred_obj):
-    """Encourage left/right symmetry by matching mean lengths."""
-    # pred_obj: [B, 8, 3]
-    left_ski_len = torch.norm(pred_obj[:, 0] - pred_obj[:, 1], dim=-1)
-    right_ski_len = torch.norm(pred_obj[:, 2] - pred_obj[:, 3], dim=-1)
-    left_pole_len = torch.norm(pred_obj[:, 4] - pred_obj[:, 5], dim=-1)
-    right_pole_len = torch.norm(pred_obj[:, 6] - pred_obj[:, 7], dim=-1)
+    """Encourage left/right symmetry by matching mean lengths.
+    
+    Handles both [B, 8, 3] and [B, T, 8, 3] inputs.
+    """
+    # Flatten B and T if needed
+    if pred_obj.ndim == 4:  # [B, T, 8, 3]
+        b, t = pred_obj.shape[:2]
+        pred_obj_flat = pred_obj.reshape(b * t, 8, 3)
+    else:  # [B, 8, 3]
+        pred_obj_flat = pred_obj
+    
+    left_ski_len = torch.norm(pred_obj_flat[:, 0] - pred_obj_flat[:, 1], dim=-1)
+    right_ski_len = torch.norm(pred_obj_flat[:, 2] - pred_obj_flat[:, 3], dim=-1)
+    left_pole_len = torch.norm(pred_obj_flat[:, 4] - pred_obj_flat[:, 5], dim=-1)
+    right_pole_len = torch.norm(pred_obj_flat[:, 6] - pred_obj_flat[:, 7], dim=-1)
 
     loss = 0.0
     loss += torch.abs(left_ski_len.mean() - right_ski_len.mean())
@@ -58,20 +78,37 @@ def symmetry_loss(pred_obj):
 def equipment_segment_lengths(obj: torch.Tensor) -> torch.Tensor:
     """Return 4 segment lengths from equipment keypoints.
 
-    Output order: [left_ski, right_ski, left_pole, right_pole], shape [B, 4].
+    Output order: [left_ski, right_ski, left_pole, right_pole].
+    
+    For [B, 8, 3] input: returns [B, 4].
+    For [B, T, 8, 3] input: returns [B, T, 4].
     """
-    if obj.ndim != 3 or obj.shape[1] != 8 or obj.shape[2] != 3:
-        raise ValueError(f"Expected object shape [B,8,3], got {tuple(obj.shape)}")
-
-    return torch.stack(
-        [
-            torch.norm(obj[:, 0] - obj[:, 1], dim=-1),
-            torch.norm(obj[:, 2] - obj[:, 3], dim=-1),
-            torch.norm(obj[:, 4] - obj[:, 5], dim=-1),
-            torch.norm(obj[:, 6] - obj[:, 7], dim=-1),
-        ],
-        dim=-1,
-    )
+    if obj.ndim == 3:
+        if obj.shape[1] != 8 or obj.shape[2] != 3:
+            raise ValueError(f"Expected object shape [B,8,3], got {tuple(obj.shape)}")
+        return torch.stack(
+            [
+                torch.norm(obj[:, 0] - obj[:, 1], dim=-1),
+                torch.norm(obj[:, 2] - obj[:, 3], dim=-1),
+                torch.norm(obj[:, 4] - obj[:, 5], dim=-1),
+                torch.norm(obj[:, 6] - obj[:, 7], dim=-1),
+            ],
+            dim=-1,
+        )
+    elif obj.ndim == 4:
+        if obj.shape[2] != 8 or obj.shape[3] != 3:
+            raise ValueError(f"Expected object shape [B,T,8,3], got {tuple(obj.shape)}")
+        return torch.stack(
+            [
+                torch.norm(obj[:, :, 0] - obj[:, :, 1], dim=-1),
+                torch.norm(obj[:, :, 2] - obj[:, :, 3], dim=-1),
+                torch.norm(obj[:, :, 4] - obj[:, :, 5], dim=-1),
+                torch.norm(obj[:, :, 6] - obj[:, :, 7], dim=-1),
+            ],
+            dim=-1,
+        )
+    else:
+        raise ValueError(f"Expected object shape [B,8,3] or [B,T,8,3], got {tuple(obj.shape)}")
 
 
 def absolute_length_loss(pred_obj: torch.Tensor, gt_obj: torch.Tensor) -> torch.Tensor:
@@ -82,6 +119,8 @@ def absolute_length_loss(pred_obj: torch.Tensor, gt_obj: torch.Tensor) -> torch.
       1: right_ski (2,3)
       2: left_pole (4,5)
       3: right_pole(6,7)
+    
+    Handles both [B, 8, 3] and [B, T, 8, 3] inputs.
     """
     pred_len = equipment_segment_lengths(pred_obj)
     gt_len = equipment_segment_lengths(gt_obj)
@@ -193,54 +232,63 @@ class Pose2Equip_STGCN_Trainer(LightningModule):
 
     @staticmethod
     def _select_points(x: torch.Tensor, idx: List[int], name: str) -> torch.Tensor:
-        # x: B, J, 3
-        if x.ndim != 3 or x.shape[-1] != 3:
-            raise ValueError(f"Expected {name} shape [B, J, 3], got {tuple(x.shape)}")
-        max_idx = x.shape[1] - 1
-        if any(i < 0 or i > max_idx for i in idx):
-            raise ValueError(
-                f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
-            )
-        return x[:, idx, :]
+        # x: [B, J, 3] or [B, T, J, 3]
+        if x.ndim == 3:
+            if x.shape[-1] != 3:
+                raise ValueError(f"Expected {name} shape [B, J, 3], got {tuple(x.shape)}")
+            max_idx = x.shape[1] - 1
+            if any(i < 0 or i > max_idx for i in idx):
+                raise ValueError(
+                    f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
+                )
+            return x[:, idx, :]  # [B, 4, 3]
+        elif x.ndim == 4:
+            if x.shape[-1] != 3:
+                raise ValueError(f"Expected {name} shape [B, T, J, 3], got {tuple(x.shape)}")
+            max_idx = x.shape[2] - 1
+            if any(i < 0 or i > max_idx for i in idx):
+                raise ValueError(
+                    f"Invalid {name} index in {idx}, valid range is [0, {max_idx}]"
+                )
+            return x[:, :, idx, :]  # [B, T, 4, 3]
+        else:
+            raise ValueError(f"Unexpected {name} ndim: {x.ndim}")
 
     def _build_object_gt(
         self, pole_gt: torch.Tensor, ski_gt: torch.Tensor
     ) -> torch.Tensor:
-        ski_obj = self._select_points(ski_gt, self.ski_gt_idx, "ski_gt")  # B, 4, 3
-        pole_obj = self._select_points(pole_gt, self.pole_gt_idx, "pole_gt")  # B, 4, 3
-
-        return torch.cat([ski_obj, pole_obj], dim=1)
+        ski_obj = self._select_points(ski_gt, self.ski_gt_idx, "ski_gt")  # [B, 4, 3] or [B, T, 4, 3]
+        pole_obj = self._select_points(pole_gt, self.pole_gt_idx, "pole_gt")  # [B, 4, 3] or [B, T, 4, 3]
+        
+        if ski_obj.ndim == 3:  # [B, 4, 3]
+            return torch.cat([ski_obj, pole_obj], dim=1)  # [B, 8, 3]
+        else:  # [B, T, 4, 3]
+            return torch.cat([ski_obj, pole_obj], dim=2)  # [B, T, 8, 3]
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
-        # GT fron Unity
+        # GT from Unity
         _gt = batch["kpt3d_gt"]
-        pole_gt = _gt["pole"].float()  # [B, t, 4, 3]
-        ski_gt = _gt["ski"].float()  # [B, t, 6, 3]
-        human_3d_gt = _gt["character"].float()  # [B, t, J, 3]
+        pole_gt = _gt["pole"].float()  # [B, T, 4, 3]
+        ski_gt = _gt["ski"].float()  # [B, T, 6, 3]
+        human_3d_gt = _gt["character"].float()  # [B, T, J, 3]
 
-        if human_3d_gt.ndim == 4:  # B, T, J, 3 -> merge B,T for frame-wise processing
-            bsz, t_steps = human_3d_gt.shape[:2]
-            human_3d_gt = human_3d_gt.reshape(
-                bsz * t_steps, human_3d_gt.shape[2], human_3d_gt.shape[3]
-            )
-            pole_gt = pole_gt.reshape(bsz * t_steps, pole_gt.shape[2], pole_gt.shape[3])
-            ski_gt = ski_gt.reshape(bsz * t_steps, ski_gt.shape[2], ski_gt.shape[3])
+        # Keep temporal dimension for sequence-level processing
+        object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # [B, T, 8, 3]
 
-        object_gt = self._build_object_gt(pole_gt=pole_gt, ski_gt=ski_gt)  # B, 8, 3
-
-        out = self.model(human_3d_gt)
-        pred_obj = out["object_3d"]
+        out = self.model(human_3d_gt)  # human_3d_gt: [B, T, J, 3]
+        pred_obj = out["object_3d"]  # [B, T, 8, 3]
 
         l3d = mpjpe(pred_obj, object_gt)
         lsymmetry = symmetry_loss(pred_obj)
         l_len_abs = absolute_length_loss(pred_obj=pred_obj, gt_obj=object_gt)
-        pred_len = equipment_segment_lengths(pred_obj)
-        gt_len = equipment_segment_lengths(object_gt)
+        pred_len = equipment_segment_lengths(pred_obj)  # [B, 4] or [B, T, 4]
+        gt_len = equipment_segment_lengths(object_gt)    # [B, 4] or [B, T, 4]
 
-        pred_ski_len_mean = 0.5 * (pred_len[:, 0].mean() + pred_len[:, 1].mean())
-        pred_pole_len_mean = 0.5 * (pred_len[:, 2].mean() + pred_len[:, 3].mean())
-        gt_ski_len_mean = 0.5 * (gt_len[:, 0].mean() + gt_len[:, 1].mean())
-        gt_pole_len_mean = 0.5 * (gt_len[:, 2].mean() + gt_len[:, 3].mean())
+        # Use ellipsis (...) to handle both 2D and 3D cases
+        pred_ski_len_mean = 0.5 * (pred_len[..., 0].mean() + pred_len[..., 1].mean())
+        pred_pole_len_mean = 0.5 * (pred_len[..., 2].mean() + pred_len[..., 3].mean())
+        gt_ski_len_mean = 0.5 * (gt_len[..., 0].mean() + gt_len[..., 1].mean())
+        gt_pole_len_mean = 0.5 * (gt_len[..., 2].mean() + gt_len[..., 3].mean())
 
         # Final objective:
         #   L = L3D + w_sym * Lsymmetry + w_len_abs * LlenAbs

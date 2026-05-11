@@ -37,14 +37,18 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from project.map_config import (
+from pose2equip.map_config import (
     UnityDataConfig,
     filter_sam3d_body_kpts,
     filter_unity_kpts,
 )
-from project.dataloader.canonicalize import apply_canonical_transform_numpy, canonicalize_pose_numpy
+from pose2equip.dataloader.canonicalize import (
+    apply_canonical_transform_numpy,
+    canonicalize_pose_numpy,
+)
 
 logger = logging.getLogger(__name__)
+
 
 class LabeledUnityDataset(Dataset):
     """
@@ -189,36 +193,6 @@ class LabeledUnityDataset(Dataset):
         )
 
     @staticmethod
-    def _is_empty_keypoint_array(arr: np.ndarray) -> bool:
-        """Return True when keypoint array has no valid joint entries."""
-        kpt = np.asarray(arr)
-        if kpt.size == 0:
-            return True
-        if kpt.ndim == 3 and kpt.shape[0] == 1:
-            kpt = kpt[0]
-        if kpt.ndim < 2:
-            return True
-        return int(kpt.shape[0]) == 0
-
-    @staticmethod
-    def _pick_fallback_frame_index(
-        target_idx: int, valid_indices: List[int]
-    ) -> Optional[int]:
-        """Pick fallback index: prefer nearest previous, otherwise nearest next."""
-        if not valid_indices:
-            return None
-
-        prev = [x for x in valid_indices if x < target_idx]
-        if prev:
-            return prev[-1]
-
-        nxt = [x for x in valid_indices if x > target_idx]
-        if nxt:
-            return nxt[0]
-
-        return None
-
-    @staticmethod
     def _read_none_detected_indices(
         output_dir: Path,
     ) -> Tuple[bool, List[int], List[str]]:
@@ -248,77 +222,6 @@ class LabeledUnityDataset(Dataset):
             indices.append(idx)
 
         return True, sorted(set(indices)), invalid_lines
-
-    def _resolve_sam_sequence_with_fallback(
-        self,
-        frame_indices: List[int],
-        sam_file_map: Dict[int, Path],
-        camera_id: Any,
-        none_detected_indices: Optional[set[int]] = None,
-    ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
-        """Resolve SAM2D/SAM3D per frame index, filling empty entries from nearby frames."""
-        loaded: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        valid_indices: List[int] = []
-        none_detected = none_detected_indices or set()
-
-        for idx in frame_indices:
-            if idx not in sam_file_map:
-                if idx in none_detected:
-                    continue
-                logger.warning(
-                    "Missing SAM file at frame idx=%s for camera %s; will try nearby-frame fallback",
-                    idx,
-                    camera_id,
-                )
-                continue
-
-            sam2d, sam3d = self._load_sam3d_file(sam_file_map[idx])
-            loaded[idx] = (sam2d, sam3d)
-            if not self._is_empty_keypoint_array(
-                sam2d
-            ) and not self._is_empty_keypoint_array(sam3d):
-                valid_indices.append(idx)
-
-        if not valid_indices:
-            raise RuntimeError(
-                f"All SAM keypoint results are empty for camera {camera_id}. "
-                "Cannot apply nearby-frame fallback."
-            )
-
-        resolved: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        for idx in frame_indices:
-            if idx in loaded:
-                sam2d, sam3d = loaded[idx]
-            else:
-                sam2d, sam3d = (
-                    np.empty((0, 0), dtype=np.float32),
-                    np.empty((0, 0), dtype=np.float32),
-                )
-
-            if (
-                idx in loaded
-                and not self._is_empty_keypoint_array(sam2d)
-                and not self._is_empty_keypoint_array(sam3d)
-            ):
-                resolved[idx] = (sam2d, sam3d)
-                continue
-
-            fallback_idx = self._pick_fallback_frame_index(idx, valid_indices)
-            if fallback_idx is None:
-                raise RuntimeError(
-                    f"SAM keypoint result at idx={idx} for camera {camera_id} is empty, "
-                    "and no fallback frame exists."
-                )
-
-            logger.warning(
-                "SAM result empty at frame idx=%s for camera %s; using fallback idx=%s",
-                idx,
-                camera_id,
-                fallback_idx,
-            )
-            resolved[idx] = loaded[fallback_idx]
-
-        return resolved
 
     @staticmethod
     def _log_missing_sam_paths(
@@ -394,33 +297,6 @@ class LabeledUnityDataset(Dataset):
         y = y_flat.squeeze(0).transpose(0, 1).reshape((target_t,) + rest_shape)
         return y.movedim(0, time_dim)
 
-    @classmethod
-    def _resample_frame_indices_avg(
-        cls, frame_indices: torch.Tensor, target_t: int
-    ) -> torch.Tensor:
-        """Resample frame indices to target_t using average semantics and round to int."""
-        if frame_indices.numel() == target_t:
-            return frame_indices
-        idx_f = frame_indices.to(torch.float32)
-        idx_f = cls._temporal_average_resample(idx_f, target_t=target_t, time_dim=0)
-        return idx_f.round().to(torch.long)
-
-    @staticmethod
-    def _extract_cam_ide_token(cam_id: Any) -> str:
-        """Extract comparable IDE token from camera id (e.g. L2_A001 -> A001)."""
-        cam_str = str(cam_id)
-        if "_" in cam_str:
-            return cam_str.split("_")[-1]
-        return cam_str
-
-    @staticmethod
-    def _extract_cam_layer_token(cam_id: Any) -> str:
-        """Extract layer/group token from camera id (e.g. L2_A001 -> L2)."""
-        cam_str = str(cam_id)
-        if "_" in cam_str:
-            return cam_str.split("_")[1]
-        return ""
-
     def _load_single_variant_keypoints(
         self,
         variant: str,
@@ -432,8 +308,8 @@ class LabeledUnityDataset(Dataset):
         common_idx: List[int],
         sam3d_cam1_kpt2d_map: Optional[Dict[int, Path]] = None,
         sam3d_cam1_kpt3d_map: Optional[Dict[int, Path]] = None,
-        character_gt_canon_tf: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
-        character_sam_canon_tf: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
+        character_gt_canon_tf: Optional[Dict[str, np.ndarray]] = None,
+        character_sam_canon_tf: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[
         Optional[torch.Tensor],
         Optional[torch.Tensor],
@@ -499,26 +375,6 @@ class LabeledUnityDataset(Dataset):
                     if is_character_variant
                     else gt_3d
                 )
-
-                if is_character_variant:
-                    gt_3d_filtered, gt_tf = canonicalize_pose_numpy(
-                        gt_3d_filtered,
-                        left_hip=6,
-                        right_hip=7,
-                        neck=14,
-                        mode="first_frame",
-                        enforce_face_z_positive=True,
-                        left_eye=0,
-                        right_eye=1,
-                    )
-                    if character_gt_canon_tf is not None:
-                        character_gt_canon_tf[idx] = (gt_tf["pelvis"], gt_tf["R"])
-                elif character_gt_canon_tf is not None and idx in character_gt_canon_tf:
-                    pelvis, R = character_gt_canon_tf[idx]
-                    gt_3d_filtered = apply_canonical_transform_numpy(
-                        gt_3d_filtered, pelvis, R
-                    )
-
                 unity_gt_kpt3d.append(torch.from_numpy(gt_3d_filtered))
 
             if self._load_2d_kpt:
@@ -535,32 +391,6 @@ class LabeledUnityDataset(Dataset):
                     np.load(sam3d_cam1_kpt3d_map[idx]), dtype=np.float32
                 )
                 sam1_3d_filtered = filter_sam3d_body_kpts(sam1_3d)
-
-                if is_character_variant:
-                    sam1_3d_filtered, sam_tf = canonicalize_pose_numpy(
-                        sam1_3d_filtered,
-                        left_hip=6,
-                        right_hip=7,
-                        neck=14,
-                        mode="first_frame",
-                        enforce_face_z_positive=True,
-                        left_eye=0,
-                        right_eye=1,
-                    )
-                    if character_sam_canon_tf is not None:
-                        character_sam_canon_tf[idx] = (
-                            sam_tf["pelvis"],
-                            sam_tf["R"],
-                        )
-                elif (
-                    character_sam_canon_tf is not None
-                    and idx in character_sam_canon_tf
-                ):
-                    pelvis, R = character_sam_canon_tf[idx]
-                    sam1_3d_filtered = apply_canonical_transform_numpy(
-                        sam1_3d_filtered, pelvis, R
-                    )
-
                 sam3d_cam1_kpt3d.append(torch.from_numpy(sam1_3d_filtered))
 
         unity_gt_cam1_kpt2d_t = (
@@ -575,6 +405,66 @@ class LabeledUnityDataset(Dataset):
         sam3d_cam1_kpt3d_t = (
             torch.stack(sam3d_cam1_kpt3d, dim=0) if self._load_3d_kpt else None
         )
+
+        # Sequence-level canonicalization to preserve temporal consistency.
+        if self._load_3d_kpt and unity_gt_kpt3d_t is not None:
+            unity_gt_kpt3d_np = unity_gt_kpt3d_t.numpy().astype(np.float32)
+            if is_character_variant:
+                unity_gt_kpt3d_np, gt_tf = canonicalize_pose_numpy(
+                    unity_gt_kpt3d_np,
+                    left_hip=6,
+                    right_hip=7,
+                    neck=14,
+                    mode="first_frame",
+                    enforce_face_z_positive=True,
+                    left_eye=0,
+                    right_eye=1,
+                )
+                if character_gt_canon_tf is not None:
+                    character_gt_canon_tf["pelvis"] = gt_tf["pelvis"]
+                    character_gt_canon_tf["R"] = gt_tf["R"]
+            elif (
+                character_gt_canon_tf is not None
+                and "pelvis" in character_gt_canon_tf
+                and "R" in character_gt_canon_tf
+            ):
+                unity_gt_kpt3d_np = apply_canonical_transform_numpy(
+                    unity_gt_kpt3d_np,
+                    character_gt_canon_tf["pelvis"],
+                    character_gt_canon_tf["R"],
+                )
+            unity_gt_kpt3d_t = torch.from_numpy(unity_gt_kpt3d_np.astype(np.float32))
+
+        if self._load_3d_kpt and sam3d_cam1_kpt3d_t is not None:
+            sam3d_cam1_kpt3d_np = sam3d_cam1_kpt3d_t.numpy().astype(np.float32)
+            if is_character_variant:
+                sam3d_cam1_kpt3d_np, sam_tf = canonicalize_pose_numpy(
+                    sam3d_cam1_kpt3d_np,
+                    left_hip=6,
+                    right_hip=7,
+                    neck=14,
+                    mode="first_frame",
+                    enforce_face_z_positive=True,
+                    left_eye=0,
+                    right_eye=1,
+                )
+                if character_sam_canon_tf is not None:
+                    character_sam_canon_tf["pelvis"] = sam_tf["pelvis"]
+                    character_sam_canon_tf["R"] = sam_tf["R"]
+            elif (
+                character_sam_canon_tf is not None
+                and "pelvis" in character_sam_canon_tf
+                and "R" in character_sam_canon_tf
+            ):
+                sam3d_cam1_kpt3d_np = apply_canonical_transform_numpy(
+                    sam3d_cam1_kpt3d_np,
+                    character_sam_canon_tf["pelvis"],
+                    character_sam_canon_tf["R"],
+                )
+            sam3d_cam1_kpt3d_t = torch.from_numpy(
+                sam3d_cam1_kpt3d_np.astype(np.float32)
+            )
+
         frame_indices_t = torch.tensor(common_idx, dtype=torch.long)
 
         return (
@@ -589,16 +479,19 @@ class LabeledUnityDataset(Dataset):
         """Load aligned modalities for one single-view sample.
 
         Modalities:
-          - cam1/cam2 frames
-          - cam1/cam2 2D kpt
+          - cam1 frames
+          - cam1 2D kpt
           - GT 3D kpt
-          - SAM3D pred 3D kpt for cam1/cam2
+          - SAM3D pred 3D kpt for cam1
 
         Supports loading multiple variants (character, pole, ski) if variant dicts are available.
         """
+
         cam1_frames_dir = Path(item["cam1_frames_dir"])
         cam1_kpt2d_dir = Path(item["cam1_kpt2d_dir"])
+
         kpt3d_dir = Path(item["kpt3d_dir"])
+
         sam3d_cam1_kpt2d_dir = Path(item["sam3d_cam1_kpt2d_dir"])
         sam3d_cam1_kpt3d_dir = Path(item["sam3d_cam1_kpt3d_dir"])
 
@@ -671,6 +564,7 @@ class LabeledUnityDataset(Dataset):
             all_common_set = cur if all_common_set is None else all_common_set & cur
         if all_common_set is None:
             raise RuntimeError("No modality selected for aligned frame discovery.")
+
         all_common = sorted(all_common_set)
         sam_valid_set: Optional[set[int]] = None
         sam3d_cam1_kpt2d_map: Dict[int, Path] = {}
@@ -711,55 +605,6 @@ class LabeledUnityDataset(Dataset):
                 item.get("cam1_id", "?"),
                 "single_view",
             )
-        if not common_idx:
-            missing_sam_idx = [idx for idx in all_common if idx not in sam_valid_set]
-            cam1_none_blocked = [idx for idx in all_common if idx in cam1_none_set]
-
-            logger.error(
-                "No valid frames after filtering for sample %s/%s/%s. "
-                "Counts: all_common=%d, sam_valid=%d, cam1_none=%d, missing_sam=%d. "
-                "Sample blocked idx (first 20): missing_sam=%s, cam1_none=%s",
-                item.get("person_id", "unknown"),
-                item.get("action_id", "unknown"),
-                item.get("cam1_id", "unknown"),
-                len(all_common),
-                len(sam_valid_set),
-                len(cam1_none_set),
-                len(missing_sam_idx),
-                missing_sam_idx[:20],
-                cam1_none_blocked[:20],
-            )
-
-            logger.error(
-                "none_detected path: cam1=%s",
-                str((cam1_none_dir / "none_detected_frames.txt").resolve()),
-            )
-
-            if self._load_2d_kpt:
-                cam1_missing_2d = [
-                    idx for idx in all_common if idx not in sam3d_cam1_kpt2d_map
-                ]
-                self._log_missing_sam_paths(
-                    camera_id=item.get("cam1_id", "unknown"),
-                    sam_dir=sam3d_cam1_kpt2d_dir,
-                    missing_indices=cam1_missing_2d,
-                )
-
-            if self._load_3d_kpt:
-                cam1_missing_3d = [
-                    idx for idx in all_common if idx not in sam3d_cam1_kpt3d_map
-                ]
-                self._log_missing_sam_paths(
-                    camera_id=item.get("cam1_id", "unknown"),
-                    sam_dir=sam3d_cam1_kpt3d_dir,
-                    missing_indices=cam1_missing_3d,
-                )
-
-            raise RuntimeError(
-                "No valid frames with SAM data for sample: "
-                f"{item.get('person_id', 'unknown')} / {item.get('action_id', 'unknown')} / "
-                f"{item.get('cam1_id', 'unknown')}"
-            )
 
         source_t = len(common_idx)
         target_t = self._target_t if self._target_t is not None else source_t
@@ -794,8 +639,8 @@ class LabeledUnityDataset(Dataset):
         # Load keypoints for all variants
         variant_kpts: Dict[str, Dict[str, Any]] = {}
         frame_indices_t = torch.empty(0, dtype=torch.long)
-        character_gt_canon_tf: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        character_sam_canon_tf: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        character_gt_canon_tf: Dict[str, np.ndarray] = {}
+        character_sam_canon_tf: Dict[str, np.ndarray] = {}
         for variant in variants:
             if has_variants:
                 cam1_kpt2d_dir_variant = Path(cam1_kpt2d_dirs[variant])
@@ -892,30 +737,23 @@ class LabeledUnityDataset(Dataset):
             return video_tchw
         return self._transform(video_tchw)
 
+    # ---------------- single-view frame-dir format ----------------
     def __getitem__(self, index: int) -> Dict[str, Any]:
         raw_item = self._index_mapping[index]
         item = self._normalize_item_dict(raw_item)
 
-        # ---------------- single-view frame-dir format ----------------
-        if "cam1_frames_dir" in item:
-            out = self._load_single_view_modalities(item)
-            out["meta"]["index"] = index
-            return out
+        out = self._load_single_view_modalities(item)
 
-        raise ValueError(
-            "This dataset currently expects single-view index items with "
-            "cam1_frames_dir and corresponding kpt/sam paths."
-        )
+        return out
 
 
-def whole_video_dataset(
+def single_view_dataset(
     experiment: str,
     dataset_idx: List[UnityDataConfig],
     transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     load_frames: bool = True,
     load_2d_kpt: bool = True,
     load_3d_kpt: bool = True,
-    load_mask: bool = True,
     target_t: Optional[int] = None,
 ) -> LabeledUnityDataset:
     return LabeledUnityDataset(

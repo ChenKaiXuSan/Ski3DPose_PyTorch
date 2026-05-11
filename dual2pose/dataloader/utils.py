@@ -22,8 +22,6 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
-from typing import Any, Callable, Dict, Optional
-
 import torch
 from torch import Tensor
 
@@ -67,31 +65,6 @@ class UniformTemporalSubsample:
 
         # 在时间维(-4)上索引
         return torch.index_select(video, -4, idx)
-
-
-class ApplyTransformToKey:
-    """
-    Applies transform to key of dictionary input.
-
-    Args:
-        key (str): the dictionary key the transform is applied to
-        transform (callable): the transform that is applied
-
-    Example:
-        >>>   transforms.ApplyTransformToKey(
-        >>>       key='video',
-        >>>       transform=UniformTemporalSubsample(num_video_samples),
-        >>>   )
-    """
-
-    def __init__(self, key: str, transform: Callable):
-        self._key = key
-        self._transform = transform
-
-    def __call__(self, x: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        x[self._key] = self._transform(x[self._key])
-        return x
-
 
 class Div255(torch.nn.Module):
     """
