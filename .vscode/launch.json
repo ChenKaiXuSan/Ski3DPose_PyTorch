@@ -45,7 +45,7 @@
         "data.num_workers=0",
         "data.batch_size=2",
         "train.view=single",
-        "model.backbone=pose2equip"
+        "model.backbone=stgcn"
       ]
     },
     {
@@ -58,7 +58,7 @@
         "data.num_workers=0",
         "data.batch_size=2",
         "train.view=dual",
-        "model.backbone=dual2pose",
+        "model.backbone=stgcn",
         "train.gpu=1"
       ]
     },

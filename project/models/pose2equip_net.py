@@ -165,9 +165,6 @@ class Pose2EquipNet(nn.Module):
     ):
         super().__init__()
         self.num_equip_kpts = int(num_equip_kpts)
-        self.dino_model_name = str(dino_model_name)
-        self.dino_freeze = bool(dino_freeze)
-        self.dino_image_size = int(dino_image_size)
 
         self.pose_encoder = PoseEncoder(
             num_joints=num_joints,
@@ -176,10 +173,10 @@ class Pose2EquipNet(nn.Module):
         )
 
         self.frame_encoder = DinoFrameEncoder(
-            model_name=self.dino_model_name,
+            model_name=dino_model_name,
             out_dim=hidden_dim,
-            image_size=self.dino_image_size,
-            freeze=self.dino_freeze,
+            image_size=dino_image_size,
+            freeze=dino_freeze,
         )
 
         self.fuse = nn.Sequential(
@@ -209,4 +206,32 @@ class Pose2EquipNet(nn.Module):
         # 直接回归 8 个装备关键点的 3D 坐标 [B, 8, 3]
         pred_obj = self.equip_head(fused).reshape(b, self.num_equip_kpts, 3)
 
+        return {"object_3d": pred_obj}
+
+
+class STGCNBaselineNet(nn.Module):
+    """STGCN-only baseline: 3D human keypoints -> 3D equipment keypoints."""
+
+    def __init__(
+        self,
+        num_joints: int = 15,
+        hidden_dim: int = 256,
+        num_equip_kpts: int = 8,
+        target_skeleton_connections_idx=None,
+    ):
+        super().__init__()
+        self.num_equip_kpts = int(num_equip_kpts)
+
+        self.pose_encoder = PoseEncoder(
+            num_joints=num_joints,
+            hidden_dim=hidden_dim,
+            target_skeleton_connections_idx=target_skeleton_connections_idx,
+        )
+        self.equip_head = nn.Linear(hidden_dim, self.num_equip_kpts * 3)
+
+    def forward(self, human_3d: torch.Tensor):
+        # human_3d: [B, J, 3] or [B, T, J, 3]
+        b = human_3d.shape[0]
+        pose_feat = self.pose_encoder(human_3d)
+        pred_obj = self.equip_head(pose_feat).reshape(b, self.num_equip_kpts, 3)
         return {"object_3d": pred_obj}

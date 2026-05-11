@@ -45,8 +45,8 @@ from project.map_config import UnityDataConfig
 # select different experiment trainer
 #####################################
 # baseline
-from project.trainer.train_dual2pose import Dual2PoseTrainer
 from project.trainer.train_pose2equip import Pose2EquipTrainer
+from project.trainer.train_stgcn import Pose2Equip_STGCN_Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -106,23 +106,18 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     monitor_mode = "max"
     ckpt_filename = "{epoch}-{val/loss:.2f}-{val/video_acc:.4f}"
 
-    if hparams.train.view == "dual":
-        if hparams.model.backbone == "dual2pose":
-            classification_module = Dual2PoseTrainer(hparams)
-            monitor_metric = "val/character/loss"
-            monitor_mode = "min"
-            ckpt_filename = "{epoch}-{val/loss:.4f}"
-        else:
-            raise ValueError("the experiment backbone is not supported.")
-    elif hparams.train.view == "single":
-        if hparams.model.backbone == "pose2equip":
-            classification_module = Pose2EquipTrainer(hparams)
-            # pose2equip 当前验证阶段记录的是 val/mpjpe 与 val/loss。
-            monitor_metric = "val/mpjpe"
-            monitor_mode = "min"
-            ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
-    else:
-        raise ValueError("the experiment view is not supported.")
+    if hparams.model.backbone == "pose2equip":
+        classification_module = Pose2EquipTrainer(hparams)
+        # pose2equip 当前验证阶段记录的是 val/mpjpe 与 val/loss。
+        monitor_metric = "val/mpjpe"
+        monitor_mode = "min"
+        ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
+    elif hparams.model.backbone == "stgcn":
+        classification_module = Pose2Equip_STGCN_Trainer(hparams)
+        # stgcn 当前验证阶段记录的是 val/mpjpe 与 val/loss。
+        monitor_metric = "val/mpjpe"
+        monitor_mode = "min"
+        ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
 
     # * prepare data module
     data_module = UnityDataModule(hparams, dataset_idx)
@@ -148,12 +143,12 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
         save_top_k=2,
     )
 
-    # define the early stop.
-    early_stopping = EarlyStopping(
-        monitor=monitor_metric,
-        patience=5,
-        mode=monitor_mode,
-    )
+    # # define the early stop.
+    # early_stopping = EarlyStopping(
+    #     monitor=monitor_metric,
+    #     patience=5,
+    #     mode=monitor_mode,
+    # )
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
 

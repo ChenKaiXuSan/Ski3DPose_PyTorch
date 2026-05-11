@@ -166,15 +166,12 @@ class UnityDataModule(LightningDataModule):
 
         first = batch[0]
         has_frames = "frames" in first
-        has_masks = "masks" in first
         has_2d = "kpt2d_gt" in first and "kpt2d_sam" in first
         has_3d = "kpt3d_gt" in first and "kpt3d_sam" in first
         has_cam2_frames = has_frames and "cam2" in first.get("frames", {})
 
         frames_cam1: List[torch.Tensor] = []
         frames_cam2: List[torch.Tensor] = []
-        masks_ski: List[torch.Tensor] = []
-        masks_ski_pole: List[torch.Tensor] = []
 
         # 2D GT: multiple variants
         gt2d_variant_lists: Dict[str, List[torch.Tensor]] = {}
@@ -201,18 +198,6 @@ class UnityDataModule(LightningDataModule):
                 if has_cam2_frames and "cam2" in sample["frames"]:
                     frames_cam2.append(
                         self._merge_bt_video(sample["frames"]["cam2"], "frames/cam2")
-                    )
-
-            if has_masks:
-                if "ski" in sample["masks"]:
-                    masks_ski.append(
-                        self._merge_bt_video(sample["masks"]["ski"], "masks/ski")
-                    )
-                if "ski_pole" in sample["masks"]:
-                    masks_ski_pole.append(
-                        self._merge_bt_video(
-                            sample["masks"]["ski_pole"], "masks/ski_pole"
-                        )
                     )
 
             if has_2d:
@@ -300,22 +285,6 @@ class UnityDataModule(LightningDataModule):
                         for x in frames_cam2
                     ]
 
-            if has_masks:
-                if masks_ski:
-                    masks_ski = [
-                        self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=1, name="masks/ski"
-                        )
-                        for x in masks_ski
-                    ]
-                if masks_ski_pole:
-                    masks_ski_pole = [
-                        self._resample_time_by_index(
-                            x, target_t=target_t, time_dim=1, name="masks/ski_pole"
-                        )
-                        for x in masks_ski_pole
-                    ]
-
             if has_2d:
                 for key, tensors in gt2d_variant_lists.items():
                     gt2d_variant_lists[key] = [
@@ -396,31 +365,6 @@ class UnityDataModule(LightningDataModule):
             if has_cam2_frames and "cam2" in out["frames"]:
                 out["frames"]["cam2"] = self._resize_video_batch_bcthw(
                     out["frames"]["cam2"], target_hw=target_hw, mode="bilinear"
-                )
-
-        if has_masks:
-            out["masks"] = {}
-            if masks_ski:
-                out["masks"]["ski"] = torch.stack(masks_ski, dim=0)
-            if masks_ski_pole:
-                out["masks"]["ski_pole"] = torch.stack(masks_ski_pole, dim=0)
-
-            # Explicitly resize masks to match frame spatial size (or img_size when frames are disabled).
-            if has_frames and "cam1" in out.get("frames", {}):
-                target_hw = (
-                    int(out["frames"]["cam1"].shape[3]),
-                    int(out["frames"]["cam1"].shape[4]),
-                )
-            else:
-                target_hw = (int(self._img_size), int(self._img_size))
-
-            if "ski" in out["masks"]:
-                out["masks"]["ski"] = self._resize_video_batch_bcthw(
-                    out["masks"]["ski"], target_hw=target_hw, mode="nearest"
-                )
-            if "ski_pole" in out["masks"]:
-                out["masks"]["ski_pole"] = self._resize_video_batch_bcthw(
-                    out["masks"]["ski_pole"], target_hw=target_hw, mode="nearest"
                 )
 
         if has_2d:

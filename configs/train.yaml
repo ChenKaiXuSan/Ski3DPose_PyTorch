@@ -56,13 +56,13 @@ data:
   batch_size: 32
 
 model:
-  backbone: pose2equip # dual2pose, pose2equip
+  backbone: stgcn # pose2equip, stgcn, 3dcnn
 
   ablation_study: single # choices=[single, multi], help='the ablation study of the model, single means only one layer is used for fusion, multi means multiple layers are used for fusion'
 
 train:
   # Training config
-  max_epochs: 100 # numer of epochs of training
+  max_epochs: 50 # numer of epochs of training
 
   view: single
 
@@ -73,7 +73,7 @@ train:
 pose2equip:
   num_joints: 15
   dino_model_name: facebook/dinov2-base
-  dino_freeze: true
+  dino_freeze: false
   dino_image_size: 224
 
   loss_w_sym: 0.03
@@ -106,7 +106,7 @@ dual2pose:
   # frame branch
   use_dino_features: false
   dino_model_name: facebook/dinov2-base
-  dino_freeze: true
+  dino_freeze: false
   dino_image_size: 224
   dino_feature_dim: 768
 
@@ -124,3 +124,5 @@ dual2pose:
 
 experiment: ${model.backbone} # the experiment name, used for log path
 log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}
+
+# python -m project.main model.backbone=stgcn data.load_frames=false
