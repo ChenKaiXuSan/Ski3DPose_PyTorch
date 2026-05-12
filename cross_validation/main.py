@@ -229,7 +229,7 @@ def generate_index_files(
     return results
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="train")
+@hydra.main(version_base=None, config_path="../configs", config_name="dual2pose.yaml")
 def hydra_main(cfg: Optional[DictConfig] = None) -> None:
     """
     通过 Hydra 配置生成 index mapping。

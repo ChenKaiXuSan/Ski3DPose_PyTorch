@@ -35,7 +35,7 @@
       "name": "unity_train",
       "type": "debugpy",
       "request": "launch",
-      "module": "project.main",
+      "module": "dual2pose.main",
       "python": "/opt/conda/envs/canonical_dualview_3d_pose/bin/python",
       "args": [
         "data.num_workers=32",
@@ -46,7 +46,7 @@
       "name": "unity_train_pose2equip",
       "type": "debugpy",
       "request": "launch",
-      "module": "project.main",
+      "module": "dual2pose.main",
       "python": "/opt/conda/envs/canonical_dualview_3d_pose/bin/python",
       "args": [
         "data.num_workers=0",
@@ -72,13 +72,12 @@
       "name": "unity_train_dual2pose",
       "type": "debugpy",
       "request": "launch",
-      "module": "project.main",
+      "module": "dual2pose.main",
       "python": "/opt/conda/envs/canonical_dualview_3d_pose/bin/python",
       "args": [
         "data.num_workers=0",
         "data.batch_size=2",
-        "train.view=dual",
-        "model.backbone=stgcn",
+        "model.backbone=crossview_fusion",
         "train.gpu=1"
       ]
     },

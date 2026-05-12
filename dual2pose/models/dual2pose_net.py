@@ -10,6 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple as _Tuple
 
+from .sim3 import align_points_sim3
+
 JOINT_FEAT_DIM = 26  # 3+3+3+1 + 3+3+3+3 + 1+1+1+1
 
 
@@ -338,7 +340,9 @@ class Dual2PoseNet(nn.Module):
                     "Please install transformers>=4.56.0."
                 ) from exc
 
-            self.dino_processor = AutoImageProcessor.from_pretrained(self.dino_model_name)
+            self.dino_processor = AutoImageProcessor.from_pretrained(
+                self.dino_model_name
+            )
             self.dino_model = AutoModel.from_pretrained(self.dino_model_name)
             self.dino_model.requires_grad_(not self.dino_freeze)
 
@@ -346,14 +350,16 @@ class Dual2PoseNet(nn.Module):
                 getattr(
                     self.dino_model.config,
                     "hidden_size",
-                    getattr(self.dino_model.config, "projection_dim", self.dino_feature_dim),
+                    getattr(
+                        self.dino_model.config, "projection_dim", self.dino_feature_dim
+                    ),
                 )
             )
             self.dino_proj = nn.Linear(model_hidden, self.dino_feature_dim)
 
-            mean = torch.tensor(self.dino_processor.image_mean, dtype=torch.float32).view(
-                1, 3, 1, 1
-            )
+            mean = torch.tensor(
+                self.dino_processor.image_mean, dtype=torch.float32
+            ).view(1, 3, 1, 1)
             std = torch.tensor(self.dino_processor.image_std, dtype=torch.float32).view(
                 1, 3, 1, 1
             )
@@ -374,14 +380,18 @@ class Dual2PoseNet(nn.Module):
         if not hasattr(self, "dino_mean") or not hasattr(self, "dino_std"):
             raise RuntimeError("DINO normalization buffers are not initialized")
         if img.ndim != 5:
-            raise ValueError(f"Expected image shape (B,C,T,H,W), got {tuple(img.shape)}")
+            raise ValueError(
+                f"Expected image shape (B,C,T,H,W), got {tuple(img.shape)}"
+            )
 
         bsz, channels, timesteps, _, _ = img.shape
         if channels != 3:
             raise ValueError(f"DINOv3 expects 3-channel RGB input, got C={channels}")
 
-        x = img.permute(0, 2, 1, 3, 4).contiguous().view(
-            bsz * timesteps, channels, img.shape[-2], img.shape[-1]
+        x = (
+            img.permute(0, 2, 1, 3, 4)
+            .contiguous()
+            .view(bsz * timesteps, channels, img.shape[-2], img.shape[-1])
         )
         x = x.float()
         if torch.isfinite(x).all() and x.max() > 1.5:

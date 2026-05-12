@@ -25,11 +25,13 @@ from typing import Any, Dict, List, Optional
 from itertools import combinations
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from project.map_config import UnityDataConfig
+from dual2pose.map_config import UnityDataConfig
 
 import numpy as np
 from sklearn.model_selection import KFold
+
 KPT_VARIANTS = ("character", "pole", "ski")
 CAPTURE_NAME_PATTERN = re.compile(r"^capture_L(\d+)_A(\d+)$")
 
@@ -265,14 +267,22 @@ class CameraPairCrossValidation:
 
                     # SAM3 outputs are organized by capture/prompt.
                     sam3_cam1_mask_ski_dir = sam3_infer_frames_root / cam1_id / "ski"
-                    sam3_cam2_mask_ski_pole_dir = sam3_infer_frames_root / cam2_id / "ski_pole"
+                    sam3_cam2_mask_ski_pole_dir = (
+                        sam3_infer_frames_root / cam2_id / "ski_pole"
+                    )
 
                     sequence_meta = meta_dir / "sequence.json"
                     joint_meta = meta_dir / "joint_names.json"
 
-                    cam1_kpt2d_dir = self._select_default_variant_dir(kpt2d_cam1_dirs, kpt2d_cam1)
-                    cam2_kpt2d_dir = self._select_default_variant_dir(kpt2d_cam2_dirs, kpt2d_cam2)
-                    kpt3d_resolved = self._select_default_variant_dir(kpt3d_dirs, kpt3d_dir)
+                    cam1_kpt2d_dir = self._select_default_variant_dir(
+                        kpt2d_cam1_dirs, kpt2d_cam1
+                    )
+                    cam2_kpt2d_dir = self._select_default_variant_dir(
+                        kpt2d_cam2_dirs, kpt2d_cam2
+                    )
+                    kpt3d_resolved = self._select_default_variant_dir(
+                        kpt3d_dirs, kpt3d_dir
+                    )
 
                     sample = UnityDataConfig(
                         person_id=person_id,
@@ -294,8 +304,12 @@ class CameraPairCrossValidation:
                         sam3d_cam2_kpt2d_dir=self._to_abs_path(sam3d_cam2_kpt2d),
                         sam3d_cam1_kpt3d_dir=self._to_abs_path(sam3d_cam1_kpt3d),
                         sam3d_cam2_kpt3d_dir=self._to_abs_path(sam3d_cam2_kpt3d),
-                        sam3_cam1_mask_ski_dir=self._to_abs_path(sam3_cam1_mask_ski_dir),
-                        sam3_cam2_mask_ski_pole_dir=self._to_abs_path(sam3_cam2_mask_ski_pole_dir),
+                        sam3_cam1_mask_ski_dir=self._to_abs_path(
+                            sam3_cam1_mask_ski_dir
+                        ),
+                        sam3_cam2_mask_ski_pole_dir=self._to_abs_path(
+                            sam3_cam2_mask_ski_pole_dir
+                        ),
                     )
                     samples.append(sample)
 

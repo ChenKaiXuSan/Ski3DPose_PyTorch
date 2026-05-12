@@ -6,23 +6,24 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import matplotlib.pyplot as plt
 import torch
 from pytorch_lightning import LightningModule
 
-from ..map_config import FILTER_SKELETON_CONNECTIONS
-from ..models.dual2pose_net import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
+from ..models.crossview_fusion import CrossViewCanonicalFusion
+from .canonicalize import canonicalize_pose_numpy, canonicalize_pose_torch
 
 logger = logging.getLogger(__name__)
 
 
-class Dual2PoseTrainer(LightningModule):
-    """Pose fusion trainer for character variant using Dual2PoseNet."""
+class CrossViewFusionTrainer(LightningModule):
+    """Pose fusion trainer for character variant using CrossViewFusion."""
 
     def __init__(self, hparams) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        model_cfg = getattr(hparams, "dual2pose", None)
+        model_cfg = getattr(hparams, "crossview_fusion", None)
         self.lr = float(getattr(hparams.loss, "lr", 0.1))
         self.weight_decay = float(
             getattr(
@@ -56,159 +57,41 @@ class Dual2PoseTrainer(LightningModule):
             getattr(model_cfg, "console_print_include_val", False)
         )
 
-        d_model = int(getattr(model_cfg, "d_model", 256))
-        n_layers = int(getattr(model_cfg, "n_layers", 4))
         # Default to confidence-free reliability modeling.
         use_conf = bool(getattr(model_cfg, "use_conf", False))
         predict_logvar = bool(getattr(model_cfg, "predict_logvar", False))
-        self.use_dino_features = bool(getattr(model_cfg, "use_dino_features", False))
-        self.dino_model_name = str(
-            getattr(
-                model_cfg,
-                "dino_model_name",
-                "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
-            )
-        )
-        self.dino_freeze = bool(getattr(model_cfg, "dino_freeze", True))
-        self.dino_image_size = int(getattr(model_cfg, "dino_image_size", 224))
-        self.dino_feature_dim = int(getattr(model_cfg, "dino_feature_dim", 768))
 
         num_joints_character = 15  # After filtering with FILTER_SKELETON_CONNECTIONS
 
         self.models = torch.nn.ModuleDict()
-        self.models["character"] = Dual2PoseNet(
-            num_joints=num_joints_character,
-            d_model=d_model,
-            n_layers=n_layers,
-            use_conf=use_conf,
-            predict_logvar=predict_logvar,
-            bone_edges=FILTER_SKELETON_CONNECTIONS,
-            use_dino_features=self.use_dino_features,
-            dino_model_name=self.dino_model_name,
-            dino_freeze=self.dino_freeze,
-            dino_image_size=self.dino_image_size,
-            dino_feature_dim=self.dino_feature_dim,
+        self.models["character"] = CrossViewCanonicalFusion(
+            num_heads=4,
         )
 
-        logger.info(f"Created model: character=Dual2PoseNet({num_joints_character})")
-
-        weights = PoseLossWeights(
-            mpjpe=float(getattr(hparams.loss, "lambda_mpjpe", 1.0)),
-            bone=float(getattr(hparams.loss, "lambda_bone", 0.2)),
-            vel=float(getattr(hparams.loss, "lambda_vel", 0.05)),
-            acc=float(getattr(hparams.loss, "lambda_acc", 0.02)),
-            agree=float(getattr(hparams.loss, "lambda_agree", 0.1)),
-            bone_stab=float(getattr(hparams.loss, "lambda_bone_stab", 0.05)),
-        )
-
-        # Create loss function only for character (has skeleton)
-        self.loss_fns = torch.nn.ModuleDict()
-        self.loss_fns["character"] = PoseRefineLoss(
-            bone_edges=FILTER_SKELETON_CONNECTIONS,
-            weights=weights,
+        logger.info(
+            "Created model: character=CrossViewCanonicalFusion(%s)",
+            num_joints_character,
         )
 
         self.save_root = str(getattr(hparams, "log_path", "./logs"))
         self.test_outputs: List[Dict[str, Any]] = []
         self.test_save_dir: Path = Path(self.save_root) / "pose_analysis"
+        self.test_vis_enabled = bool(getattr(model_cfg, "save_test_vis", True))
+        self.test_vis_max_samples = int(getattr(model_cfg, "test_vis_max_samples", 2))
+        self.test_vis_dir: Path = self.test_save_dir / "vis"
 
         logger.info(
-            "Dual2PoseTrainer config: use_conf=%s, predict_logvar=%s, use_dino_features=%s, "
+            "CrossViewFusionTrainer config: use_conf=%s, predict_logvar=%s,"
             "lambda_view_recon=%.4f, lambda_alpha_balance=%.4f, lambda_alpha_entropy=%.4f, lambda_p0_supervise=%.4f, "
             "rigid_align_right_to_left=%s",
             use_conf,
             predict_logvar,
-            self.use_dino_features,
             self.lambda_view_recon,
             self.lambda_alpha_balance,
             self.lambda_alpha_entropy,
             self.lambda_p0_supervise,
             self.rigid_align_right_to_left,
         )
-
-    @staticmethod
-    def _rigid_align_right_pose_to_left_batch(
-        left: torch.Tensor,
-        right: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Align right pose to left pose for each sample in a batch using Kabsch.
-
-        Args:
-            left: (B,T,J,3)
-            right: (B,T,J,3)
-        Returns:
-            (right_aligned, stats)
-        """
-        if left.shape != right.shape:
-            raise ValueError(
-                f"Rigid alignment expects same shape, got {tuple(left.shape)} vs {tuple(right.shape)}"
-            )
-        if left.ndim != 4 or left.shape[-1] != 3:
-            raise ValueError(
-                f"Rigid alignment expects (B,T,J,3), got {tuple(left.shape)}"
-            )
-
-        bsz = int(left.shape[0])
-        aligned = right.clone()
-        rmse_before_vals: List[float] = []
-        rmse_after_vals: List[float] = []
-        valid_points_vals: List[float] = []
-        applied = 0
-
-        for b in range(bsz):
-            x_full = right[b].reshape(-1, 3)
-            y_full = left[b].reshape(-1, 3)
-            valid = torch.isfinite(x_full).all(dim=-1) & torch.isfinite(y_full).all(
-                dim=-1
-            )
-            n_valid = int(valid.sum().item())
-            valid_points_vals.append(float(n_valid))
-            if n_valid < 3:
-                continue
-
-            x = x_full[valid]
-            y = y_full[valid]
-            x_mean = x.mean(dim=0)
-            y_mean = y.mean(dim=0)
-            x0 = x - x_mean
-            y0 = y - y_mean
-
-            h = x0.transpose(0, 1) @ y0
-            u, _, vh = torch.linalg.svd(h)
-            r = vh.transpose(0, 1) @ u.transpose(0, 1)
-
-            # Enforce proper rotation (det(R)=+1) to avoid reflection.
-            if torch.det(r) < 0:
-                vh = vh.clone()
-                vh[-1, :] *= -1
-                r = vh.transpose(0, 1) @ u.transpose(0, 1)
-
-            t = y_mean - x_mean @ r.transpose(0, 1)
-
-            aligned_b = right[b].reshape(-1, 3) @ r.transpose(0, 1) + t
-            aligned[b] = aligned_b.reshape_as(right[b])
-
-            diff_before = x_full[valid] - y_full[valid]
-            diff_after = aligned[b].reshape(-1, 3)[valid] - y_full[valid]
-            rmse_before_vals.append(
-                float(torch.sqrt((diff_before.pow(2).sum(dim=-1)).mean()).item())
-            )
-            rmse_after_vals.append(
-                float(torch.sqrt((diff_after.pow(2).sum(dim=-1)).mean()).item())
-            )
-            applied += 1
-
-        def _safe_mean(vals: List[float]) -> float:
-            return float(sum(vals) / len(vals)) if vals else float("nan")
-
-        return aligned, {
-            "enabled": 1.0,
-            "applied": float(applied),
-            "applied_ratio": float(applied / max(1, bsz)),
-            "valid_points": _safe_mean(valid_points_vals),
-            "rmse_before": _safe_mean(rmse_before_vals),
-            "rmse_after": _safe_mean(rmse_after_vals),
-        }
 
     @staticmethod
     def _temporal_velocity_norm(x: torch.Tensor) -> torch.Tensor:
@@ -303,8 +186,13 @@ class Dual2PoseTrainer(LightningModule):
                 - frames_left, frames_right: video frames (or None if not available)
         """
 
-        left_sam_kpt3d = batch["kpt3d_sam"]["cam1"].float()
-        right_sam_kpt3d = batch["kpt3d_sam"]["cam2"].float()
+        kpt3d_sam = batch["kpt3d_sam"]
+        if "cam1" in kpt3d_sam and "cam2" in kpt3d_sam:
+            left_sam_kpt3d = kpt3d_sam["cam1"].float()
+            right_sam_kpt3d = kpt3d_sam["cam2"].float()
+        else:
+            left_sam_kpt3d = kpt3d_sam["character_cam1"].float()
+            right_sam_kpt3d = kpt3d_sam["character_cam2"].float()
 
         # Validate shape
         for p in [left_sam_kpt3d, right_sam_kpt3d]:
@@ -316,7 +204,12 @@ class Dual2PoseTrainer(LightningModule):
         # GT data
         unity_gt_kpt3d = None
         if "kpt3d_gt" in batch:
-            unity_gt_kpt3d = batch["kpt3d_gt"].float()
+            if isinstance(batch["kpt3d_gt"], dict):
+                unity_gt_kpt3d = batch["kpt3d_gt"].get("character")
+                if unity_gt_kpt3d is not None:
+                    unity_gt_kpt3d = unity_gt_kpt3d.float()
+            else:
+                unity_gt_kpt3d = batch["kpt3d_gt"].float()
 
         # Frame data (video frames)
         frames_left = None
@@ -348,44 +241,30 @@ class Dual2PoseTrainer(LightningModule):
         p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(
             batch
         )
-        rigid_stats: Dict[str, float] = {
-            "enabled": 1.0 if self.rigid_align_right_to_left else 0.0,
-            "applied": 0.0,
-            "applied_ratio": 0.0,
-            "valid_points": 0.0,
-            "rmse_before": float("nan"),
-            "rmse_after": float("nan"),
-        }
-        if self.rigid_align_right_to_left:
-            p_right, rigid_stats = self._rigid_align_right_pose_to_left_batch(
-                left=p_left,
-                right=p_right,
-            )
 
-        model = self.models["character"]
-        loss_fn = self.loss_fns["character"]
+        # canonicalize
+        left_canonical, left_transform = canonicalize_pose_torch(p_left)
 
-        img_feat_left = None
-        img_feat_right = None
-        if self.use_dino_features:
-            if frames_left is None or frames_right is None:
-                raise ValueError(
-                    "use_dino_features=True requires frames.cam1 and frames.cam2 in batch"
-                )
+        right_canonical, right_transform = canonicalize_pose_torch(p_right)
+
+        gt_canonical, _ = canonicalize_pose_torch(p_gt) if p_gt is not None else None
 
         # Forward pass
-        out = model(
-            img_l=frames_left,
-            img_r=frames_right,
-            p_left=p_left,
-            p_right=p_right,
+        fused, aux = self.models["character"](
+            left_canonical,
+            right_canonical,
         )
-        p_hat = out["p_hat"]
-        p0 = out["p0"]
-        alpha = out["alpha"]
-        logvar = out.get("logvar", None)
-        img_feat_left = out.get("img_feat_left", None)
-        img_feat_right = out.get("img_feat_right", None)
+        p_hat = fused
+        alpha = aux["alpha"]
+        p0 = 0.5 * (p_left + p_right)
+        logvar = None
+        img_feat_left = None
+        img_feat_right = None
+        rigid_stats = {
+            "rmse_before": float("nan"),
+            "rmse_after": float("nan"),
+            "applied_ratio": 0.0,
+        }
 
         # Reconstruct left/right poses from fused pose + reliability weight.
         # With delta = (p_left - p_right):
@@ -395,22 +274,27 @@ class Dual2PoseTrainer(LightningModule):
         p_left_recon = p_hat + (1.0 - alpha) * delta_lr
         p_right_recon = p_hat - alpha * delta_lr
 
-        loss_recon_left = torch.nn.functional.l1_loss(p_left_recon, p_left)
-        loss_recon_right = torch.nn.functional.l1_loss(p_right_recon, p_right)
+        loss_recon_left = torch.nn.functional.l1_loss(p_left_recon, left_canonical)
+        loss_recon_right = torch.nn.functional.l1_loss(p_right_recon, right_canonical)
         loss_view_recon = 0.5 * (loss_recon_left + loss_recon_right)
 
         # Reliability diagnostics: cross-view discrepancy and temporal stability.
-        cv_gap = torch.norm(p_left - p_right, dim=-1).mean()
+        cv_gap = torch.norm(left_canonical - right_canonical, dim=-1).mean()
         vel_norm = self._temporal_velocity_norm(p_hat)
         acc_norm = self._temporal_acceleration_norm(p_hat)
 
         # Compute loss
+        mpjpe = p_hat.new_tensor(float("nan"))
         if p_gt is not None:
-            loss_dict = loss_fn(p_hat=p_hat, p_gt=p_gt, logvar=logvar)
-            mpjpe = torch.norm(p_hat - p_gt, dim=-1).mean()
-            loss_p0_supervise = torch.nn.functional.l1_loss(p0, p_gt)
+            loss_sup = torch.nn.functional.l1_loss(fused, gt_canonical)
+            loss_dict = {
+                "loss": loss_sup,
+                "l1": loss_sup,
+            }
+            mpjpe = torch.norm(fused - gt_canonical, dim=-1).mean()
+            loss_p0_supervise = torch.nn.functional.l1_loss(p0, gt_canonical)
             self.log(
-                f"{stage}/character/mpjpe",
+                f"{stage}/mpjpe",
                 mpjpe,
                 on_step=True,
                 on_epoch=True,
@@ -418,12 +302,12 @@ class Dual2PoseTrainer(LightningModule):
                 batch_size=p_hat.shape[0],
             )
         else:
-            loss_dict = loss_fn(
-                p_hat=p_hat,
-                p_left=p_left,
-                p_right=p_right,
-                alpha=alpha,
-            )
+            pseudo_gt = 0.5 * (left_canonical + right_canonical)
+            loss_self = torch.nn.functional.l1_loss(fused, pseudo_gt)
+            loss_dict = {
+                "loss": loss_self,
+                "l1": loss_self,
+            }
             loss_p0_supervise = p_hat.new_tensor(0.0)
 
         # Prevent gating collapse to one side.
@@ -448,7 +332,7 @@ class Dual2PoseTrainer(LightningModule):
 
         # Log loss components
         self.log(
-            f"{stage}/character/loss",
+            f"{stage}/loss",
             loss,
             on_step=True,
             on_epoch=True,
@@ -458,7 +342,7 @@ class Dual2PoseTrainer(LightningModule):
         for k, v in loss_dict.items():
             if k != "loss":
                 self.log(
-                    f"{stage}/character/{k}",
+                    f"{stage}/{k}",
                     v,
                     on_step=True,
                     on_epoch=True,
@@ -467,21 +351,21 @@ class Dual2PoseTrainer(LightningModule):
 
         # Log alpha statistics
         self.log(
-            f"{stage}/character/alpha_mean",
+            f"{stage}/alpha_mean",
             alpha.mean(),
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/alpha_std",
+            f"{stage}/alpha_std",
             alpha.std(),
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/cross_view_gap",
+            f"{stage}/cross_view_gap",
             cv_gap,
             on_step=True,
             on_epoch=True,
@@ -492,7 +376,7 @@ class Dual2PoseTrainer(LightningModule):
             rmse_after = rigid_stats["rmse_after"]
             if rmse_before == rmse_before:
                 self.log(
-                    f"{stage}/character/rigid_rmse_before",
+                    f"{stage}/rigid_rmse_before",
                     p_hat.new_tensor(rmse_before),
                     on_step=True,
                     on_epoch=True,
@@ -500,94 +384,82 @@ class Dual2PoseTrainer(LightningModule):
                 )
             if rmse_after == rmse_after:
                 self.log(
-                    f"{stage}/character/rigid_rmse_after",
+                    f"{stage}/rigid_rmse_after",
                     p_hat.new_tensor(rmse_after),
                     on_step=True,
                     on_epoch=True,
                     batch_size=p_hat.shape[0],
                 )
             self.log(
-                f"{stage}/character/rigid_applied_ratio",
+                f"{stage}/rigid_applied_ratio",
                 p_hat.new_tensor(rigid_stats["applied_ratio"]),
                 on_step=True,
                 on_epoch=True,
                 batch_size=p_hat.shape[0],
             )
         self.log(
-            f"{stage}/character/vel_norm",
+            f"{stage}/vel_norm",
             vel_norm,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/acc_norm",
+            f"{stage}/acc_norm",
             acc_norm,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/recon_left",
+            f"{stage}/recon_left",
             loss_recon_left,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/recon_right",
+            f"{stage}/recon_right",
             loss_recon_right,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/recon_view",
+            f"{stage}/recon_view",
             loss_view_recon,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/loss_alpha_balance",
+            f"{stage}/loss_alpha_balance",
             loss_alpha_balance,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/alpha_entropy",
+            f"{stage}/alpha_entropy",
             alpha_entropy,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/loss_p0_supervise",
+            f"{stage}/loss_p0_supervise",
             loss_p0_supervise,
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
         self.log(
-            f"{stage}/character/p0_drift",
+            f"{stage}/p0_drift",
             torch.nn.functional.l1_loss(p_hat, p0),
             on_step=True,
             on_epoch=True,
             batch_size=p_hat.shape[0],
         )
-        if (
-            self.use_dino_features
-            and img_feat_left is not None
-            and img_feat_right is not None
-        ):
-            self.log(
-                f"{stage}/character/dino_feat_gap",
-                torch.norm(img_feat_left - img_feat_right, dim=-1).mean(),
-                on_step=True,
-                on_epoch=True,
-                batch_size=p_hat.shape[0],
-            )
 
         console_metrics: Dict[str, Any] = {
             "loss": loss,
@@ -612,14 +484,6 @@ class Dual2PoseTrainer(LightningModule):
                 console_metrics["rigid_rmse_after"] = p_hat.new_tensor(
                     rigid_stats["rmse_after"]
                 )
-        if (
-            self.use_dino_features
-            and img_feat_left is not None
-            and img_feat_right is not None
-        ):
-            console_metrics["dino_feat_gap"] = torch.norm(
-                img_feat_left - img_feat_right, dim=-1
-            ).mean()
 
         self._maybe_print_metrics_to_console(stage=stage, metrics=console_metrics)
 
@@ -652,14 +516,132 @@ class Dual2PoseTrainer(LightningModule):
     def training_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, stage="train")
 
-    @torch.no_grad()
     def validation_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, stage="val")
 
     def on_test_start(self) -> None:
-        self.test_outputs: List[Dict[str, Any]] = []
+        self.test_outputs = []
         self.test_save_dir.mkdir(parents=True, exist_ok=True)
+        self.test_vis_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Dual2PoseNet test start")
+
+    @staticmethod
+    def _set_equal_axes_3d(ax, pts: torch.Tensor) -> None:
+        if pts.numel() == 0:
+            return
+        mins = pts.min(dim=0).values
+        maxs = pts.max(dim=0).values
+        center = (mins + maxs) * 0.5
+        radius = float((maxs - mins).max().item() * 0.6)
+        if radius <= 0:
+            radius = 1.0
+        ax.set_xlim(float(center[0] - radius), float(center[0] + radius))
+        ax.set_ylim(float(center[1] - radius), float(center[1] + radius))
+        ax.set_zlim(float(center[2] - radius), float(center[2] + radius))
+
+    def _save_test_visualizations(
+        self,
+        variant_results: Dict[str, Any],
+        batch_idx: int,
+    ) -> None:
+        if not self.test_vis_enabled or not self._is_global_zero():
+            return
+
+        for variant, results in variant_results.items():
+            p_hat = results.get("p_hat")
+            p_left = results.get("p_left")
+            p_right = results.get("p_right")
+            p_gt = results.get("p_gt")
+
+            if not isinstance(p_hat, torch.Tensor):
+                continue
+            if not isinstance(p_left, torch.Tensor) or not isinstance(
+                p_right, torch.Tensor
+            ):
+                continue
+            if p_hat.ndim != 4 or p_left.ndim != 4 or p_right.ndim != 4:
+                continue
+
+            bsz = p_hat.shape[0]
+            max_samples = min(bsz, max(1, self.test_vis_max_samples))
+            t_idx = p_hat.shape[1] // 2
+
+            for b_idx in range(max_samples):
+                left_pose = p_left[b_idx, t_idx].detach().cpu()
+                right_pose = p_right[b_idx, t_idx].detach().cpu()
+                fused_pose = p_hat[b_idx, t_idx].detach().cpu()
+                gt_pose = (
+                    p_gt[b_idx, t_idx].detach().cpu()
+                    if isinstance(p_gt, torch.Tensor) and p_gt.ndim == 4
+                    else None
+                )
+
+                fig = plt.figure(figsize=(15, 5))
+                ax1 = fig.add_subplot(1, 3, 1, projection="3d")
+                ax2 = fig.add_subplot(1, 3, 2, projection="3d")
+                ax3 = fig.add_subplot(1, 3, 3, projection="3d")
+
+                ax1.scatter(
+                    left_pose[:, 0],
+                    left_pose[:, 1],
+                    left_pose[:, 2],
+                    s=10,
+                    c="tab:blue",
+                )
+                ax1.set_title("left")
+
+                ax2.scatter(
+                    right_pose[:, 0],
+                    right_pose[:, 1],
+                    right_pose[:, 2],
+                    s=10,
+                    c="tab:orange",
+                )
+                ax2.set_title("right")
+
+                ax3.scatter(
+                    fused_pose[:, 0],
+                    fused_pose[:, 1],
+                    fused_pose[:, 2],
+                    s=12,
+                    c="tab:red",
+                    label="fused",
+                )
+                if gt_pose is not None:
+                    ax3.scatter(
+                        gt_pose[:, 0],
+                        gt_pose[:, 1],
+                        gt_pose[:, 2],
+                        s=10,
+                        c="tab:green",
+                        alpha=0.75,
+                        label="gt",
+                    )
+                    ax3.legend(loc="upper right")
+                    pts_ref = torch.cat(
+                        [left_pose, right_pose, fused_pose, gt_pose], dim=0
+                    )
+                else:
+                    pts_ref = torch.cat([left_pose, right_pose, fused_pose], dim=0)
+                ax3.set_title("fused_vs_gt")
+
+                self._set_equal_axes_3d(ax1, pts_ref)
+                self._set_equal_axes_3d(ax2, pts_ref)
+                self._set_equal_axes_3d(ax3, pts_ref)
+
+                for ax in (ax1, ax2, ax3):
+                    ax.set_xlabel("X")
+                    ax.set_ylabel("Y")
+                    ax.set_zlabel("Z")
+
+                fig.suptitle(f"{variant} batch={batch_idx} sample={b_idx} t={t_idx}")
+                fig.tight_layout()
+                out_file = (
+                    self.test_vis_dir
+                    / f"batch_{batch_idx:05d}_{variant}_b{b_idx:02d}_t{t_idx:03d}.png"
+                )
+                fig.savefig(out_file, dpi=160)
+                plt.close(fig)
 
     @torch.no_grad()
     def test_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
@@ -667,6 +649,9 @@ class Dual2PoseTrainer(LightningModule):
         self._shared_step(batch, stage="test")
 
         variant_results = batch.get("_variant_results", {})
+        self._save_test_visualizations(
+            variant_results=variant_results, batch_idx=_batch_idx
+        )
 
         pack: Dict[str, Any] = {
             "variant_results": {},

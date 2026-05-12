@@ -38,15 +38,15 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import TensorBoardLogger
 
-from project.dataloader.data_loader import UnityDataModule
-from project.map_config import UnityDataConfig
+from .dataloader.data_loader import UnityDataModule
+from .map_config import UnityDataConfig
 
 #####################################
 # select different experiment trainer
 #####################################
 # baseline
-from project.trainer.train_pose2equip import Pose2EquipTrainer
-from project.trainer.train_stgcn import Pose2Equip_STGCN_Trainer
+from .trainer.train_dual2pose import Dual2PoseTrainer
+from .trainer.train_crossview_fusion import CrossViewFusionTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -106,15 +106,15 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     monitor_mode = "max"
     ckpt_filename = "{epoch}-{val/loss:.2f}-{val/video_acc:.4f}"
 
-    if hparams.model.backbone == "pose2equip":
-        classification_module = Pose2EquipTrainer(hparams)
-        # pose2equip 当前验证阶段记录的是 val/mpjpe 与 val/loss。
-        monitor_metric = "val/mpjpe"
+    if hparams.model.backbone == "dual2pose":
+        classification_module = Dual2PoseTrainer(hparams)
+        # dual2pose 当前验证阶段记录的是 val/character/mpjpe 与 val/loss。
+        monitor_metric = "val/character/mpjpe"
         monitor_mode = "min"
-        ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
-    elif hparams.model.backbone == "stgcn":
-        classification_module = Pose2Equip_STGCN_Trainer(hparams)
-        # stgcn 当前验证阶段记录的是 val/mpjpe 与 val/loss。
+        ckpt_filename = "{epoch}-{val/loss:.4f}-{val/character/mpjpe:.4f}"
+    elif hparams.model.backbone == "crossview_fusion":
+        classification_module = CrossViewFusionTrainer(hparams)
+        # crossview_fusion 当前验证阶段记录的是 val/mpjpe 与 val/loss。
         monitor_metric = "val/mpjpe"
         monitor_mode = "min"
         ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
@@ -185,7 +185,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
 @hydra.main(
     version_base=None,
     config_path="../configs",  # * the config_path is relative to location of the python script
-    config_name="train.yaml",
+    config_name="dual2pose.yaml",
 )
 def init_params(config):
 
