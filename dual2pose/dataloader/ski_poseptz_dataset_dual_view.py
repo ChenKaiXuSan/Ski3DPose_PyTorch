@@ -183,7 +183,9 @@ class LabeledSkiPosePTZDataset(Dataset):
         """Apply transform frame-wise on (T,C,H,W)."""
         if self._transform is None:
             return frames_tchw
-        transformed = [self._transform(frames_tchw[t]) for t in range(frames_tchw.shape[0])]
+        transformed = [
+            self._transform(frames_tchw[t]) for t in range(frames_tchw.shape[0])
+        ]
         return torch.stack(transformed, dim=0)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
@@ -212,7 +214,9 @@ class LabeledSkiPosePTZDataset(Dataset):
                 self._read_frame(seq=seq, cam=self._cam2_id, frame=frame_id)
             )
             kpt3d_list.append(
-                torch.from_numpy(np.asarray(self._pose_3d[row_idx_cam1], dtype=np.float32))
+                torch.from_numpy(
+                    np.asarray(self._pose_3d[row_idx_cam1], dtype=np.float32)
+                )
             )
 
         frames_cam1_t = torch.stack(frames_cam1, dim=0)  # (T,C,H,W)
@@ -261,3 +265,25 @@ def ski_poseptz_dataset(
         target_t=target_t,
         min_t=min_t,
     )
+
+
+if __name__ == "__main__":
+    # quick sanity check
+    dataset = ski_poseptz_dataset(
+        dataset_root="/workspace/data/Ski-PosePTZ-CameraDataset-png",
+        split="test",
+        cam1_id=0,
+        cam2_id=1,
+        transform=None,
+        labels_file="labels.h5",
+        target_t=10,
+        min_t=2,
+    )
+    print(f"Dataset length: {len(dataset)}")
+    sample = dataset[0]
+    print(f"Sample keys: {list(sample.keys())}")
+    print(f"Frames cam1 shape: {sample['frames']['cam1'].shape}")
+    print(f"Frames cam2 shape: {sample['frames']['cam2'].shape}")
+    print(f"Kpt3d shape: {sample['kpt3d'].shape}")
+    print(f"Frame indices shape: {sample['frame_indices'].shape}")
+    print(f"Meta: {sample['meta']}")

@@ -15,6 +15,10 @@ paths:
     unity_dataset_data_path: /workspace/data/skiing_unity_dataset/data
     unity_sam3d_result_root: /workspace/data/skiing_unity_dataset/sam3d_body_results
 
+  ski_poseptz:
+    ski_poseptz_camera_path: /workspace/data/Ski-PosePTZ-CameraDataset-png
+    ski_poseptz_result_root: /workspace/data/Ski-PosePTZ-CameraDataset-png/sam3d_body_results
+
 # Model
 model:
   root_path: /workspace/code/ckpt/sam-3d-body-dinov3
@@ -26,8 +30,8 @@ model:
   fov_name: moge2
 
 visualize:
-  save_video: true
-  plot_3d: true
+  save_video: false
+  plot_3d: false
   plot_2d: true
   plot_skeleton: true
   plot_skeleton_3d: true
@@ -50,12 +54,12 @@ infer:
 
   # Camera layer filtering (L0-L4)
   # Set to null/[] to process all layers, or [0, 1, 2] to process L0, L1, L2 only
-  camera_layers: null  # null = all layers, or specify [0], [0,1], [0,1,2,3,4], etc.
+  camera_layers: null # null = all layers, or specify [0], [0,1], [0,1,2,3,4], etc.
 
   # Person filtering
   # Set to null to process all persons, or specify person name like "male" or "female"
-  person_filter: null  # null = all persons, or "male", "female"
+  person_filter: null # null = all persons, or "male", "female"
 
   # Action filtering
   # Set to null to process all actions, or specify action name pattern to match
-  action_filter: null  # null = all actions, or action name like "Anim_Male_Skier_Idle"
+  action_filter: null # null = all actions, or action name like "Anim_Male_Skier_Idle"

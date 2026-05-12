@@ -8,11 +8,11 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "unity_sam3d_body",
+      "name": "sam3d_body",
       "type": "debugpy",
       "request": "launch",
-      "module": "SAM3Dbody.main",
-      // "args": ["--config", "configs/sam3d_body.yaml"]
+      "python": "/opt/conda/envs/sam_3d_body/bin/python",
+      "module": "SAM3Dbody.main_ski_pose_ptz",
     },
     {
       "name": "sam3_infer",

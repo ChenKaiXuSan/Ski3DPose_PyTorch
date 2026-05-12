@@ -55,7 +55,7 @@ data:
   time_window: 32
 
   num_workers: 16
-  batch_size: 64
+  batch_size: 1024
 
 model:
   backbone: crossview_fusion # crossview_fusion, dual2pose
