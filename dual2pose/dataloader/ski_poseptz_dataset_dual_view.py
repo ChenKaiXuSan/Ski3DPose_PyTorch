@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import h5py  # type: ignore[import-untyped]
@@ -14,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from dual2pose.map_config import filter_sam3d_body_kpts
+from map_config import filter_sam3d_body_kpts
 
 
 class LabeledSkiPosePTZDataset(Dataset):

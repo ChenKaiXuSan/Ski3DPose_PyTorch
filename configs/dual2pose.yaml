@@ -45,7 +45,7 @@ data:
     root_path: /workspace/data/Ski-PosePTZ-CameraDataset-png
     data_path: ${data.ski_pose_ptz.root_path}/data
     sam_3d_body_results_path: ${data.ski_pose_ptz.root_path}/sam3d_body_results/inference # 有标签的训练数据
-    index_mapping: ${root_path}/index_mapping/ski_pose_ptz_index_mapping.json
+    index_mapping: ${data.ski_pose_ptz.root_path}/index_mapping/ski_pose_ptz_index_mapping.json
 
   index_mapping: ${data.unity.root_path}/index_mapping # precomputed index mapping directory
   index_mapping_path: ${data.index_mapping}/use_layer_camera_filter_disabled/camera_pairs_by_action_folds # precomputed index mapping json file path
@@ -61,7 +61,7 @@ data:
   time_window: 30
 
   num_workers: 32
-  batch_size: 2048
+  batch_size: 4096
 
 model:
   backbone: crossview_fusion # crossview_fusion, dual2pose

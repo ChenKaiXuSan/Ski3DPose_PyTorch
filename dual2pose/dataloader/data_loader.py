@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def load_index_mapping(
     index_mapping_path,
-) -> Dict[str, list]
+) -> Dict[str, list]:
     """加载指定fold的JSON文件
     """
 

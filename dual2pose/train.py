@@ -20,11 +20,8 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
-import json
 import logging
 import os
-from pathlib import Path
-from typing import Dict, List
 
 import hydra
 from omegaconf import DictConfig
@@ -33,19 +30,17 @@ from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
     RichModelSummary,
-    TQDMProgressBar,
     RichProgressBar,
 )
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
-from .dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
+from dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
 
 #####################################
 # select different experiment trainer
 #####################################
-# baseline
-from .trainer.train_dual2pose import Dual2PoseTrainer
-from .trainer.train_crossview_fusion import CrossViewFusionTrainer
+from trainer.train_dual2pose import Dual2PoseTrainer
+from trainer.train_crossview_fusion import CrossViewFusionTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +77,7 @@ def train(hparams: DictConfig, fold: int):
         ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
 
     # * prepare data module
-    ski_pose_ptz_data_module = SkiPosePTZDataModule(hparams)
+    # ski_pose_ptz_data_module = SkiPosePTZDataModule(hparams)
     unity_data_module = UnityDataModule(hparams)
 
     # for the tensorboard

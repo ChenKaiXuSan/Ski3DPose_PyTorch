@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Tuple
 import torch
 from pytorch_lightning import LightningModule
 
-from ..map_config import FILTER_SKELETON_CONNECTIONS
-from ..models.dual2pose_net import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
+from map_config import FILTER_SKELETON_CONNECTIONS
+from models.dual2pose_net import Dual2PoseNet, PoseLossWeights, PoseRefineLoss
 
 logger = logging.getLogger(__name__)
 

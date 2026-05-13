@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 from pytorch_lightning import LightningModule
 
-from ..models.crossview_fusion import CrossViewCanonicalFusion
+from models.crossview_fusion import CrossViewCanonicalFusion
 from .canonicalize import canonicalize_pose_torch
 
 logger = logging.getLogger(__name__)
