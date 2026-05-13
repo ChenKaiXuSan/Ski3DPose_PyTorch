@@ -78,7 +78,7 @@
         "data.num_workers=0",
         "data.batch_size=2",
         "model.backbone=crossview_fusion",
-        "train.gpu=1"
+        "train.gpu=1",
       ]
     },
   ]

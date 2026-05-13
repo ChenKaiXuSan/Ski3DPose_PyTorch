@@ -64,6 +64,10 @@ def process_single_action(
     seq_list = list(source_root.iterdir())
 
     for seq_dir in seq_list:
+
+        if not seq_dir.is_dir():
+            continue
+
         cam_list = list(seq_dir.iterdir())
 
         for cam_dir in cam_list:

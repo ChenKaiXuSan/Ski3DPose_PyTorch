@@ -8,10 +8,6 @@
 			"name": "data",
 			"path": "/workspace/data"
 		},
-		{
-			"name": "sam3_reference",
-			"path": "/workspace/sam3"
-		},
 	],
 	"settings": {
 		"python-envs.pythonProjects": [

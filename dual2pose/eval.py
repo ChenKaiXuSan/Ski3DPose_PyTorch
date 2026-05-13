@@ -30,15 +30,16 @@ import hydra
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import (
+    EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
     RichModelSummary,
     TQDMProgressBar,
-    RichProgressBar,
 )
-from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 
-from .dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
+from .dataloader.data_loader import UnityDataModule
+from .map_config import UnityDataConfig
 
 #####################################
 # select different experiment trainer
@@ -50,11 +51,48 @@ from .trainer.train_crossview_fusion import CrossViewFusionTrainer
 logger = logging.getLogger(__name__)
 
 
-def train(hparams: DictConfig, fold: int):
-    """the train process for the one fold.
+def load_fold_dataset_idx_from_fold_json(
+    config: DictConfig, fold: int
+) -> Dict[str, List[UnityDataConfig]]:
+    """加载指定fold的JSON文件
+
+    Args:
+        config: Hydra配置对象
+        fold: fold号 (0-4 for 5-fold, etc.)
+
+    Returns:
+        Dict[str, List[UnityDataConfig]]: {"train": [...], "val": [...], "test": [...]}
+    """
+
+    index_file_path = Path(str(config.data.index_mapping_path))
+
+    fold_file = index_file_path / f"fold_{fold:02d}.json"
+
+    with open(fold_file, "r", encoding="utf-8") as f:
+        fold_data = json.load(f)
+
+    fold_data.pop("_metadata", None)
+
+    dataset_idx: Dict[str, List[UnityDataConfig]] = {"train": [], "val": [], "test": []}
+
+    # 处理三种split
+    for split in ["train", "val", "test"]:
+        src_list = fold_data.get(split, [])
+        for item in src_list:
+            dataset_idx[split].append(UnityDataConfig.from_dict(item))
+
+    logger.info(
+        f"✓ Loaded fold {fold}: train={len(dataset_idx['train'])}, val={len(dataset_idx['val'])}, test={len(dataset_idx['test'])}"
+    )
+    return dataset_idx
+
+
+def eval(hparams: DictConfig, dataset_idx, fold: int):
+    """the eval process for the one fold.
 
     Args:
         hparams (hydra): the hyperparameters.
+        dataset_idx (int): the dataset index for the one fold.
         fold (int): the fold index.
 
     Returns:
@@ -82,25 +120,10 @@ def train(hparams: DictConfig, fold: int):
         ckpt_filename = "{epoch}-{val/loss:.4f}-{val/mpjpe:.4f}"
 
     # * prepare data module
-    ski_pose_ptz_data_module = SkiPosePTZDataModule(hparams)
-    unity_data_module = UnityDataModule(hparams)
-
-    # for the tensorboard
-    tb_logger = TensorBoardLogger(
-        save_dir=os.path.join(hparams.log_path, "tb_logs"),
-        name="fold_" + str(fold),  # here should be str type.
-    )
-
-    # 初始化 CSVLogger
-    cvs_logger = CSVLogger(
-        save_dir=os.path.join(hparams.log_path, "csv_logs"), name="fold_" + str(fold)
-    )
+    data_module = UnityDataModule(hparams, dataset_idx)
 
     # some callbacks
-    # progress_bar = TQDMProgressBar(refresh_rate=10)
-    progress_bar = RichProgressBar(
-        refresh_rate=10, leave=True
-    )  # * 可选：使用 RichProgressBar 替代 TQDMProgressBar
+    progress_bar = TQDMProgressBar(refresh_rate=10)
     rich_model_summary = RichModelSummary(max_depth=2)
 
     # define the checkpoint becavier.
@@ -122,25 +145,21 @@ def train(hparams: DictConfig, fold: int):
         ],
         accelerator="gpu",
         max_epochs=hparams.train.max_epochs,
-        logger=[tb_logger, cvs_logger],
+        # logger=[tb_logger],
         callbacks=[
             progress_bar,
             rich_model_summary,
             model_check_point,
+            # early_stopping,
             lr_monitor,
         ],
-        # limit_train_batches=1,
-        # limit_val_batches=1,
-        # limit_test_batches=10,
     )
-
-    trainer.fit(classification_module, unity_data_module)
 
     # save the metrics to file
     trainer.test(
         classification_module,
-        unity_data_module,
-        ckpt_path="best",
+        data_module,
+        ckpt_path="/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-12/fold_0/checkpoints/fold_0/last.ckpt",
     )
 
 
@@ -156,20 +175,67 @@ def init_params(config):
 
     requested_fold = int(config.train.fold)
 
-    # 加载单个fold的JSON文件
+    # 检测可用的fold数量
+    available_folds = _detect_available_folds(config)
+
+    # train.fold >= 0: run only the specified fold (recommended for multi-node jobs)
+    # train.fold < 0: run all folds sequentially (backward compatible mode)
+    if requested_fold >= 0:
+        if requested_fold not in available_folds:
+            raise KeyError(
+                f"Requested fold {requested_fold} is not available. "
+                f"Available folds: {available_folds}"
+            )
+        target_folds = [requested_fold]
+    else:
+        target_folds = available_folds
+
     logger.info("#" * 50)
-    logger.info(f"Start train fold: {requested_fold}")
+    logger.info(
+        "Start training folds: %s (requested train.fold=%s)",
+        target_folds,
+        requested_fold,
+    )
     logger.info("#" * 50)
 
-    train(config, requested_fold)
+    #########
+    # K fold
+    #########
+    # * for one fold, we first train/val model, then save the best ckpt preds/label into .pt file.
+
+    for fold in target_folds:
+        # 加载单个fold的JSON文件
+        dataset_value = load_fold_dataset_idx_from_fold_json(config, fold)
+        logger.info("#" * 50)
+        logger.info(f"Start eval fold: {fold}")
+        logger.info("#" * 50)
+
+        eval(config, dataset_value, fold)
+
+        logger.info("#" * 50)
+        logger.info(f"finish eval fold: {fold}")
+        logger.info("#" * 50)
 
     logger.info("#" * 50)
-    logger.info(f"finish train fold: {requested_fold}")
+    logger.info("finish eval folds: %s", target_folds)
     logger.info("#" * 50)
 
-    logger.info("#" * 50)
-    logger.info("finish train folds: %s", [requested_fold])
-    logger.info("#" * 50)
+
+def _detect_available_folds(config: DictConfig) -> List[int]:
+    """检测可用的fold文件数量"""
+    index_file_path = Path(str(config.data.index_mapping_path))
+
+    # 查找所有fold_XX.json文件
+    fold_files = sorted(index_file_path.glob("fold_*.json"))
+
+    available_folds = []
+    for fold_file in fold_files:
+        # 从fold_00.json提取00并转为int
+        match = fold_file.stem.replace("fold_", "")
+        fold_num = int(match)
+        available_folds.append(fold_num)
+
+    return sorted(available_folds)
 
 
 if __name__ == "__main__":

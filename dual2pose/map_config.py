@@ -212,6 +212,30 @@ class TrueDataConfig:
     right_cam_sam3d_kpt3d_dir: str
 
 
+@dataclass
+class SkiPosePTZDataConfig:
+    """Ski Pose PTZ 数据的全局映射配置类，包含与滑雪数据相关的路径和标识符。"""
+
+    subject_id: str
+    sequence_id: str
+
+    cam1_id: int
+    cam2_id: int
+
+    labels_h5: str
+
+    cam1_frames_dir: str
+    cam2_frames_dir: str
+
+    cam1_sam3d_kpt2d_dir: str
+    cam2_sam3d_kpt2d_dir: str
+
+    cam1_sam3d_kpt3d_dir: str
+    cam2_sam3d_kpt3d_dir: str
+
+    pesudo_gt_kpt3d_dir: str
+
+
 def _normalize_kpts_array(kpts: np.ndarray) -> np.ndarray:
     arr = np.asarray(kpts, dtype=np.float32)
     if arr.ndim == 3 and arr.shape[0] == 1:
