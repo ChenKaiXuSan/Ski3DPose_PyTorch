@@ -30,7 +30,6 @@ class DualViewUnityDataset(Dataset):
 
     def __init__(
         self,
-        experiment: str,
         index_mapping: List[UnityDataConfig],
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         load_frames: bool = True,
@@ -40,7 +39,7 @@ class DualViewUnityDataset(Dataset):
         target_t: int = 32,
     ) -> None:
         super().__init__()
-        self._experiment = experiment
+
         self._index_mapping = index_mapping
         self._transform = transform
         self._load_frames = bool(load_frames)
@@ -648,7 +647,6 @@ class DualViewUnityDataset(Dataset):
         out: Dict[str, Any] = {
             "frame_indices": frame_indices_t,
             "meta": {
-                "experiment": self._experiment,
                 "person_id": item.get("person_id", "unknown"),
                 "action_id": item.get("action_id", "unknown"),
                 "cam1_id": item.get("cam1_id", "unknown"),

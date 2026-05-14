@@ -36,15 +36,15 @@ from .unity_dataset_dual_view import DualViewUnityDataset
 from .ski_poseptz_dataset_dual_view import LabeledSkiPosePTZDataset
 
 from .utils import Div255
-import logging 
+import logging
 
 logger = logging.getLogger(__name__)
+
 
 def load_index_mapping(
     index_mapping_path,
 ) -> Dict[str, list]:
-    """加载指定fold的JSON文件
-    """
+    """加载指定fold的JSON文件"""
 
     index_file_path = Path(index_mapping_path)
 
@@ -83,8 +83,6 @@ class UnityDataModule(LightningDataModule):
         # * this is the dataset idx, which include the train/val dataset idx.
         self._index_mapping = opt.data.unity.index_mapping_path
 
-        self._experiment = opt.experiment
-
         self.mapping_transform = Compose(
             [
                 Div255(),
@@ -113,7 +111,6 @@ class UnityDataModule(LightningDataModule):
 
         # train dataset
         self.train_gait_dataset = DualViewUnityDataset(
-            experiment=self._experiment,
             index_mapping=self._dataset_idx["train"],
             transform=self.mapping_transform,
             load_frames=self._load_frames,
@@ -124,7 +121,6 @@ class UnityDataModule(LightningDataModule):
 
         # val dataset
         self.val_gait_dataset = DualViewUnityDataset(
-            experiment=self._experiment,
             index_mapping=self._dataset_idx["val"],
             transform=self.mapping_transform,
             load_frames=self._load_frames,
@@ -135,7 +131,6 @@ class UnityDataModule(LightningDataModule):
 
         # test dataset
         self.test_gait_dataset = DualViewUnityDataset(
-            experiment=self._experiment,
             index_mapping=self._dataset_idx["test"],
             transform=self.mapping_transform,
             load_frames=self._load_frames,
@@ -229,9 +224,7 @@ class SkiPosePTZDataModule(LightningDataModule):
         so we directly use the pytorchvideo API to load the video.
         AKA, use whole video to validate the model.
         """
-        self._dataset_idx = load_index_mapping(
-            self._index_mapping
-        )  
+        self._dataset_idx = load_index_mapping(self._index_mapping)
 
     def setup(self, stage: Optional[str] = None) -> None:
         """

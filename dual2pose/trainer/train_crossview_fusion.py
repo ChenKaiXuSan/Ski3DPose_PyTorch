@@ -42,62 +42,30 @@ class CrossViewFusionTrainer(LightningModule):
         self.lambda_alpha_entropy = float(
             getattr(model_cfg, "lambda_alpha_entropy", 0.005)
         )
+        self.lambda_temporal_smooth = float(
+            getattr(model_cfg, "lambda_temporal_smooth", 0.01)
+        )
 
-        self.models = torch.nn.ModuleDict()
-        self.models["character"] = CrossViewCanonicalFusion(
+        self.models = CrossViewCanonicalFusion(
             num_heads=4,
         )
 
         self.save_root = str(getattr(hparams, "log_path", "./logs"))
-        self.test_outputs: List[Dict[str, Any]] = []
+
         self.test_save_dir: Path = Path(self.save_root) / "summary"
-
-        self.test_vis_dir: Path = self.test_save_dir / "vis"
-
-    @staticmethod
-    def _temporal_velocity_norm(x: torch.Tensor) -> torch.Tensor:
-        """Mean first-order temporal difference norm for (B,T,J,3)."""
-        if x.ndim != 4 or x.shape[1] <= 1:
-            return x.new_tensor(0.0)
-        vel = x[:, 1:] - x[:, :-1]
-        return torch.norm(vel, dim=-1).mean()
-
-    @staticmethod
-    def _temporal_acceleration_norm(x: torch.Tensor) -> torch.Tensor:
-        """Mean second-order temporal difference norm for (B,T,J,3)."""
-        if x.ndim != 4 or x.shape[1] <= 2:
-            return x.new_tensor(0.0)
-        acc = x[:, 2:] - 2.0 * x[:, 1:-1] + x[:, :-2]
-        return torch.norm(acc, dim=-1).mean()
-
-    def _is_global_zero(self) -> bool:
-        rank = int(getattr(self, "global_rank", 0))
-        return rank == 0
-
-    def _to_float(self, value: Any) -> float:
-        if isinstance(value, torch.Tensor):
-            if value.numel() == 0:
-                return float("nan")
-            return float(value.detach().float().mean().item())
-        if isinstance(value, (int, float)):
-            return float(value)
-        return float("nan")
 
     @staticmethod
     def _get_character_data(batch: Dict[str, Any]) -> Tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
     ]:
         """Extract character SAM, GT data, and frames.
 
         Returns:
-            Tuple of (p_left, p_right, p_gt, frames_left, frames_right) where:
+            Tuple of (p_left, p_right, p_gt) where:
                 - p_left, p_right: SAM 3D predictions
                 - p_gt: ground truth (or None if not available)
-                - frames_left, frames_right: video frames (or None if not available)
         """
 
         kpt3d_sam = batch["kpt3d_sam"]
@@ -125,21 +93,10 @@ class CrossViewFusionTrainer(LightningModule):
             else:
                 unity_gt_kpt3d = batch["kpt3d_gt"].float()
 
-        # Frame data (video frames)
-        frames_left = None
-        frames_right = None
-        if "frames" in batch and isinstance(batch["frames"], dict):
-            if "cam1" in batch["frames"]:
-                frames_left = batch["frames"]["cam1"].float()
-            if "cam2" in batch["frames"]:
-                frames_right = batch["frames"]["cam2"].float()
-
         return (
             left_sam_kpt3d,
             right_sam_kpt3d,
             unity_gt_kpt3d,
-            frames_left,
-            frames_right,
         )
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
@@ -152,9 +109,7 @@ class CrossViewFusionTrainer(LightningModule):
         variant_results: Dict[str, Any] = {}
 
         # ===== CHARACTER: Dual2PoseNet with SAM =====
-        p_left, p_right, p_gt, frames_left, frames_right = self._get_character_data(
-            batch
-        )
+        p_left, p_right, p_gt = self._get_character_data(batch)
 
         # canonicalize
         left_canonical, left_transform = canonicalize_pose_torch(p_left)
@@ -164,7 +119,7 @@ class CrossViewFusionTrainer(LightningModule):
         gt_canonical, _ = canonicalize_pose_torch(p_gt) if p_gt is not None else None
 
         # Forward pass
-        fused, aux = self.models["character"](
+        fused, aux = self.models(
             left_canonical,
             right_canonical,
         )
@@ -184,8 +139,6 @@ class CrossViewFusionTrainer(LightningModule):
 
         # Reliability diagnostics: cross-view discrepancy and temporal stability.
         cv_gap = torch.norm(left_canonical - right_canonical, dim=-1).mean()
-        vel_norm = self._temporal_velocity_norm(fused)
-        acc_norm = self._temporal_acceleration_norm(fused)
 
         # Compute loss
         mpjpe = fused.new_tensor(float("nan"))
@@ -193,7 +146,6 @@ class CrossViewFusionTrainer(LightningModule):
             loss_sup = torch.nn.functional.l1_loss(fused, gt_canonical)
             loss_dict = {
                 "loss": loss_sup,
-                "l1": loss_sup,
             }
             mpjpe = torch.norm(fused - gt_canonical, dim=-1).mean()
             self.log(
@@ -209,7 +161,6 @@ class CrossViewFusionTrainer(LightningModule):
             loss_self = torch.nn.functional.l1_loss(fused, pseudo_gt)
             loss_dict = {
                 "loss": loss_self,
-                "l1": loss_self,
             }
 
         # Prevent gating collapse to one side.
@@ -223,11 +174,15 @@ class CrossViewFusionTrainer(LightningModule):
         # Minimize negative entropy == maximize entropy.
         loss_alpha_entropy = -alpha_entropy
 
+        # temporla smooth loss
+        acc = fused[:, 2:] - 2.0 * fused[:, 1:-1] + fused[:, :-2]
+        temporal_smooth_loss = torch.norm(acc, dim=-1).mean()
         loss = (
             loss_dict["loss"]
             + self.lambda_view_recon * loss_view_recon
             + self.lambda_alpha_balance * loss_alpha_balance
             + self.lambda_alpha_entropy * loss_alpha_entropy
+            + self.lambda_temporal_smooth * temporal_smooth_loss
         )
         total_loss = total_loss + loss
 
@@ -240,15 +195,14 @@ class CrossViewFusionTrainer(LightningModule):
             prog_bar=True,
             batch_size=fused.shape[0],
         )
-        for k, v in loss_dict.items():
-            if k != "loss":
-                self.log(
-                    f"{stage}/{k}",
-                    v,
-                    on_step=True,
-                    on_epoch=True,
-                    batch_size=fused.shape[0],
-                )
+        self.log(
+            f"{stage}/temporal_smooth_loss",
+            temporal_smooth_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=fused.shape[0],
+        )
 
         # Log alpha statistics
         self.log(
@@ -265,6 +219,7 @@ class CrossViewFusionTrainer(LightningModule):
             on_epoch=True,
             batch_size=fused.shape[0],
         )
+
         self.log(
             f"{stage}/cross_view_gap",
             cv_gap,
@@ -272,20 +227,7 @@ class CrossViewFusionTrainer(LightningModule):
             on_epoch=True,
             batch_size=fused.shape[0],
         )
-        self.log(
-            f"{stage}/vel_norm",
-            vel_norm,
-            on_step=True,
-            on_epoch=True,
-            batch_size=fused.shape[0],
-        )
-        self.log(
-            f"{stage}/acc_norm",
-            acc_norm,
-            on_step=True,
-            on_epoch=True,
-            batch_size=fused.shape[0],
-        )
+
         self.log(
             f"{stage}/recon_left",
             loss_recon_left,
@@ -305,6 +247,7 @@ class CrossViewFusionTrainer(LightningModule):
             loss_view_recon,
             on_step=True,
             on_epoch=True,
+            prog_bar=True,
             batch_size=fused.shape[0],
         )
         self.log(
@@ -321,7 +264,7 @@ class CrossViewFusionTrainer(LightningModule):
             on_epoch=True,
             batch_size=fused.shape[0],
         )
-        
+
         # Store results
         variant_results = {
             "fused": fused,
@@ -349,7 +292,6 @@ class CrossViewFusionTrainer(LightningModule):
     def on_test_start(self) -> None:
         self.test_outputs = []
         self.test_save_dir.mkdir(parents=True, exist_ok=True)
-        self.test_vis_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Cross-view Fusion test start")
 
     def test_step(self, batch: Dict[str, Any], _batch_idx: int) -> torch.Tensor:
@@ -363,34 +305,21 @@ class CrossViewFusionTrainer(LightningModule):
         return torch.tensor(0.0)
 
     @staticmethod
-    def _safe_shape(x: Any) -> str:
-        if isinstance(x, torch.Tensor):
-            return str(tuple(x.shape))
-        return "N/A"
+    def _safe_mpjpe(
+        pred: torch.Tensor, label: torch.Tensor
+    ) -> tuple[torch.Tensor, float]:
 
-    @staticmethod
-    def _safe_mpjpe(pred: Any, label: Any) -> float | None:
-        if not isinstance(pred, torch.Tensor) or not isinstance(label, torch.Tensor):
-            return None
-        if pred.shape != label.shape:
-            return None
-        if pred.ndim < 2 or pred.shape[-1] != 3:
-            return None
-        return float(torch.norm(pred - label, dim=-1).mean().item())
+        mpjpe_per_point = torch.norm(pred - label, dim=-1)
+        _mean = mpjpe_per_point.mean().item()
+        return mpjpe_per_point, _mean
 
     def on_test_epoch_end(self) -> None:
-        if not hasattr(self, "test_outputs") or len(self.test_outputs) == 0:
-            logger.warning("No test outputs to save.")
-            return
 
-        fold = (
-            getattr(self.logger, "root_dir", "fold").split("/")[-1]
-            if self.logger is not None
-            else "fold"
-        )
         save_dir = self.test_save_dir
 
         fused_mpjpes = []
+        left_raw_mpjpes = []
+        right_raw_mpjpes = []
         left_canonical_mpjpes = []
         right_canonical_mpjpes = []
         left_recon_mpjpes = []
@@ -398,12 +327,20 @@ class CrossViewFusionTrainer(LightningModule):
         pesudo_fuse_mpjpes = []
         pesudo_canonical_fuse_mpjpes = []
 
-        all_alpha = []
+        # per-joint collectors: each element shape (B, T, J)
+        all_fused_per_joint = []
+        all_left_raw_per_joint = []
+        all_right_raw_per_joint = []
+        all_left_canonical_per_joint = []
+        all_right_canonical_per_joint = []
+        all_left_recon_per_joint = []
+        all_right_recon_per_joint = []
+        all_pesudo_fuse_per_joint = []
+        all_pesudo_canonical_fuse_per_joint = []
 
         for output in self.test_outputs:
 
             fused = output.get("fused")
-            alpha = output.get("alpha")
             p_left = output.get("p_left")
             p_right = output.get("p_right")
             left_canonical = output.get("left_canonical")
@@ -413,19 +350,37 @@ class CrossViewFusionTrainer(LightningModule):
             ground_truth = output.get("ground_truth")
 
             # calc mpjpe
-            fused_mpjpe = self._safe_mpjpe(fused, ground_truth)
-            left_canonical_mpjpe = self._safe_mpjpe(left_canonical, ground_truth)
-            right_canonical_mpjpe = self._safe_mpjpe(right_canonical, ground_truth)
+            fused_mpjpe_per_point, fused_mpjpe = self._safe_mpjpe(fused, ground_truth)
 
-            left_recon_mpjpe = self._safe_mpjpe(p_left_recon, ground_truth)
-            right_recon_mpjpe = self._safe_mpjpe(p_right_recon, ground_truth)
+            left_raw_mpjpe_per_point, left_raw_mpjpe = self._safe_mpjpe(
+                p_left, ground_truth
+            )
+            right_raw_mpjpe_per_point, right_raw_mpjpe = self._safe_mpjpe(
+                p_right, ground_truth
+            )
+
+            left_canonical_mpjpe_per_point, left_canonical_mpjpe = self._safe_mpjpe(
+                left_canonical, ground_truth
+            )
+            right_canonical_mpjpe_per_point, right_canonical_mpjpe = self._safe_mpjpe(
+                right_canonical, ground_truth
+            )
+
+            left_recon_mpjpe_per_point, left_recon_mpjpe = self._safe_mpjpe(
+                p_left_recon, left_canonical
+            )
+            right_recon_mpjpe_per_point, right_recon_mpjpe = self._safe_mpjpe(
+                p_right_recon, right_canonical
+            )
 
             pesudo_fuse = 0.5 * (p_left + p_right)
-            pesudo_fuse_mpjpe = self._safe_mpjpe(pesudo_fuse, ground_truth)
+            pesudo_fuse_mpjpe_per_point, pesudo_fuse_mpjpe = self._safe_mpjpe(
+                pesudo_fuse, ground_truth
+            )
 
             pesudo_canonical_fuse = 0.5 * (left_canonical + right_canonical)
-            pesudo_canonical_fuse_mpjpe = self._safe_mpjpe(
-                pesudo_canonical_fuse, ground_truth
+            pesudo_canonical_fuse_mpjpe_per_point, pesudo_canonical_fuse_mpjpe = (
+                self._safe_mpjpe(pesudo_canonical_fuse, ground_truth)
             )
 
             fused_mpjpes.append(fused_mpjpe)
@@ -433,14 +388,64 @@ class CrossViewFusionTrainer(LightningModule):
             right_canonical_mpjpes.append(right_canonical_mpjpe)
             left_recon_mpjpes.append(left_recon_mpjpe)
             right_recon_mpjpes.append(right_recon_mpjpe)
+
             pesudo_fuse_mpjpes.append(pesudo_fuse_mpjpe)
             pesudo_canonical_fuse_mpjpes.append(pesudo_canonical_fuse_mpjpe)
+            left_raw_mpjpes.append(left_raw_mpjpe)
+            right_raw_mpjpes.append(right_raw_mpjpe)
 
-            all_alpha.append(alpha.cpu().numpy())
+            # collect per-joint tensors (B, T, J) -> flatten to (N, J)
+            all_fused_per_joint.append(
+                fused_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_left_raw_per_joint.append(
+                left_raw_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_right_raw_per_joint.append(
+                right_raw_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_left_canonical_per_joint.append(
+                left_canonical_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_right_canonical_per_joint.append(
+                right_canonical_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_left_recon_per_joint.append(
+                left_recon_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_right_recon_per_joint.append(
+                right_recon_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_pesudo_fuse_per_joint.append(
+                pesudo_fuse_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+            all_pesudo_canonical_fuse_per_joint.append(
+                pesudo_canonical_fuse_mpjpe_per_point.detach().cpu().flatten(0, -2)
+            )
+
+        # aggregate per-joint MPJPE across all batches: shape (N_total, J)
+        def _per_joint_mean(lst):
+            return torch.cat(lst, dim=0).mean(dim=0).tolist()  # list of length J
+
+        per_joint_stats = {
+            "fused": _per_joint_mean(all_fused_per_joint),
+            "left_raw": _per_joint_mean(all_left_raw_per_joint),
+            "right_raw": _per_joint_mean(all_right_raw_per_joint),
+            "left_canonical": _per_joint_mean(all_left_canonical_per_joint),
+            "right_canonical": _per_joint_mean(all_right_canonical_per_joint),
+            "left_recon": _per_joint_mean(all_left_recon_per_joint),
+            "right_recon": _per_joint_mean(all_right_recon_per_joint),
+            "pesudo_fuse": _per_joint_mean(all_pesudo_fuse_per_joint),
+            "pesudo_canonical_fuse": _per_joint_mean(
+                all_pesudo_canonical_fuse_per_joint
+            ),
+        }
 
         # report summary
         summary = {
             "fused_mpjpe_mean": float(torch.tensor(fused_mpjpes).mean().item()),
+            "left_raw_mpjpe_mean": float(torch.tensor(left_raw_mpjpes).mean().item()),
+            "right_raw_mpjpe_mean": float(torch.tensor(right_raw_mpjpes).mean().item()),
             "left_canonical_mpjpe_mean": float(
                 torch.tensor(left_canonical_mpjpes).mean().item()
             ),
@@ -459,20 +464,25 @@ class CrossViewFusionTrainer(LightningModule):
             "pesudo_canonical_fuse_mpjpe_mean": float(
                 torch.tensor(pesudo_canonical_fuse_mpjpes).mean().item()
             ),
-            "alpha_mean": float(torch.tensor(all_alpha).mean().item()),
         }
 
         # save results
-        save_file = save_dir / f"{fold}_outputs.pt"
+        save_file = save_dir / f"outputs.pt"
         torch.save(self.test_outputs, save_file)
 
         # report summary to txt
-        txt_file = save_dir / f"{fold}_report.txt"
+        txt_file = save_dir / f"report.txt"
         with open(txt_file, "w", encoding="utf-8") as f:
-            f.write(f"Cross-View Fusion Test Report for {fold}\n")
+            f.write("Cross-View Fusion Test Report\n")
             f.write("=" * 40 + "\n")
+            f.write("[Overall MPJPE]\n")
             for k, v in summary.items():
                 f.write(f"{k}: {v:.4f}\n")
+            f.write("\n[Per-Joint MPJPE (joint index: mean error)]\n")
+            for variant_name, joint_values in per_joint_stats.items():
+                f.write(f"  {variant_name}:\n")
+                for j, val in enumerate(joint_values):
+                    f.write(f"    joint_{j:02d}: {val:.4f}\n")
 
         logger.info("Saved pose predictions/labels to %s", save_file)
         logger.info("Saved test report to %s", txt_file)
@@ -480,7 +490,7 @@ class CrossViewFusionTrainer(LightningModule):
     def configure_optimizers(self):
         """Configure optimizer for the character model."""
         optimizer = torch.optim.AdamW(
-            self.models["character"].parameters(),
+            self.models.parameters(),
             lr=self.lr,
             weight_decay=self.weight_decay,
         )
@@ -492,6 +502,6 @@ class CrossViewFusionTrainer(LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "train/character/loss",
+                "monitor": "train/loss",
             },
         }

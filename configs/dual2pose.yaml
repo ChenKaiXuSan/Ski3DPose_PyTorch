@@ -45,11 +45,7 @@ data:
     root_path: /workspace/data/Ski-PosePTZ-CameraDataset-png
     data_path: ${data.ski_pose_ptz.root_path}/data
     sam_3d_body_results_path: ${data.ski_pose_ptz.root_path}/sam3d_body_results/inference # 有标签的训练数据
-    index_mapping: ${data.ski_pose_ptz.root_path}/index_mapping/ski_pose_ptz_index_mapping.json
-
-  index_mapping: ${data.unity.root_path}/index_mapping # precomputed index mapping directory
-  index_mapping_path: ${data.index_mapping}/use_layer_camera_filter_disabled/camera_pairs_by_action_folds # precomputed index mapping json file path
-  sam3d_export_path: ${data.unity.root_path}/sam3d_body_results/modalities_from_sam3d # exported kpt2d/kpt3d from SAM3D
+    index_mapping_path: ${data.ski_pose_ptz.root_path}/index_mapping/ski_pose_ptz_index_mapping.json
 
   img_size: 224
 
@@ -105,7 +101,7 @@ dual2pose:
   lambda_agree: 0.1
   lambda_bone_stab: 0.05
 
-experiment: ${model.backbone} # the experiment name, used for log path
-log_path: logs/train_unity/${experiment}/${now:%Y-%m-%d}/fold_${train.fold}
+log_path: logs/train_unity/${model.backbone}/${now:%Y-%m-%d}/${now:%H-%M-%S} # the log path, used for log and checkpoint
+
 
 # python -m project.main model.backbone=stgcn data.load_frames=false

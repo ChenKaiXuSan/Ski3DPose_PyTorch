@@ -88,14 +88,13 @@ def train(hparams: DictConfig, fold: int):
 
     # 初始化 CSVLogger
     cvs_logger = CSVLogger(
-        save_dir=os.path.join(hparams.log_path, "csv_logs"), name="fold_" + str(fold)
+        save_dir=os.path.join(hparams.log_path, "csv_logs"),
+        name="fold_" + str(fold),
+        flush_logs_every_n_steps=100,
     )
 
     # some callbacks
-    # progress_bar = TQDMProgressBar(refresh_rate=10)
-    progress_bar = RichProgressBar(
-        refresh_rate=10, leave=True
-    )  # * 可选：使用 RichProgressBar 替代 TQDMProgressBar
+    progress_bar = RichProgressBar(refresh_rate=10, leave=True)
     rich_model_summary = RichModelSummary(max_depth=2)
 
     # define the checkpoint becavier.
@@ -135,7 +134,7 @@ def train(hparams: DictConfig, fold: int):
     trainer.test(
         classification_module,
         unity_data_module,
-        ckpt_path="best",
+        ckpt_path="last",
     )
 
 
