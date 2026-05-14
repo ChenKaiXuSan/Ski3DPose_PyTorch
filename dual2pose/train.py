@@ -45,16 +45,12 @@ from trainer.train_crossview_fusion import CrossViewFusionTrainer
 logger = logging.getLogger(__name__)
 
 
-def train(hparams: DictConfig, fold: int):
-    """the train process for the one fold.
-
-    Args:
-        hparams (hydra): the hyperparameters.
-        fold (int): the fold index.
-
-    Returns:
-        list: best trained model, data loader
-    """
+@hydra.main(
+    version_base=None,
+    config_path="../configs",  # * the config_path is relative to location of the python script
+    config_name="dual2pose.yaml",
+)
+def init_params(config: DictConfig):
 
     seed_everything(42, workers=True)
 
@@ -63,14 +59,14 @@ def train(hparams: DictConfig, fold: int):
     monitor_mode = "max"
     ckpt_filename = "{epoch}-{val/loss:.2f}-{val/video_acc:.4f}"
 
-    if hparams.model.backbone == "dual2pose":
-        classification_module = Dual2PoseTrainer(hparams)
+    if config.model.backbone == "dual2pose":
+        classification_module = Dual2PoseTrainer(config)
         # dual2pose 当前验证阶段记录的是 val/character/mpjpe 与 val/loss。
         monitor_metric = "val/character/mpjpe"
         monitor_mode = "min"
         ckpt_filename = "{epoch}-{val/loss:.4f}-{val/character/mpjpe:.4f}"
-    elif hparams.model.backbone == "crossview_fusion":
-        classification_module = CrossViewFusionTrainer(hparams)
+    elif config.model.backbone == "crossview_fusion":
+        classification_module = CrossViewFusionTrainer(config)
         # crossview_fusion 当前验证阶段记录的是 val/mpjpe 与 val/loss。
         monitor_metric = "val/mpjpe"
         monitor_mode = "min"
@@ -78,28 +74,31 @@ def train(hparams: DictConfig, fold: int):
 
     # * prepare data module
     # ski_pose_ptz_data_module = SkiPosePTZDataModule(hparams)
-    unity_data_module = UnityDataModule(hparams)
+    unity_data_module = UnityDataModule(config)
 
     # for the tensorboard
     tb_logger = TensorBoardLogger(
-        save_dir=os.path.join(hparams.log_path, "tb_logs"),
-        name="fold_" + str(fold),  # here should be str type.
+        save_dir=os.path.join(config.log_path, "tb_logs"),
+        name="train",
     )
 
     # 初始化 CSVLogger
     cvs_logger = CSVLogger(
-        save_dir=os.path.join(hparams.log_path, "csv_logs"),
-        name="fold_" + str(fold),
+        save_dir=os.path.join(config.log_path, "csv_logs"),
+        name="train",
         flush_logs_every_n_steps=100,
     )
 
     # some callbacks
     progress_bar = RichProgressBar(refresh_rate=10, leave=True)
-    rich_model_summary = RichModelSummary(max_depth=2)
+    rich_model_summary = RichModelSummary(max_depth=3)
 
     # define the checkpoint becavier.
     model_check_point = ModelCheckpoint(
-        dirpath=os.path.join(hparams.log_path, "checkpoints", "fold_" + str(fold)),
+        dirpath=os.path.join(
+            config.log_path,
+            "checkpoints",
+        ),
         filename=ckpt_filename,
         auto_insert_metric_name=False,
         monitor=monitor_metric,
@@ -112,10 +111,10 @@ def train(hparams: DictConfig, fold: int):
 
     trainer = Trainer(
         devices=[
-            int(hparams.train.gpu),
+            int(config.train.gpu),
         ],
         accelerator="gpu",
-        max_epochs=hparams.train.max_epochs,
+        max_epochs=config.train.max_epochs,
         logger=[tb_logger, cvs_logger],
         callbacks=[
             progress_bar,
@@ -136,34 +135,6 @@ def train(hparams: DictConfig, fold: int):
         unity_data_module,
         ckpt_path="last",
     )
-
-
-@hydra.main(
-    version_base=None,
-    config_path="../configs",  # * the config_path is relative to location of the python script
-    config_name="dual2pose.yaml",
-)
-def init_params(config):
-
-    # Load precomputed fold mapping only; do not prepare CV splits here.
-    # 使用预生成的单fold JSON文件（每个fold文件必须存在）
-
-    requested_fold = int(config.train.fold)
-
-    # 加载单个fold的JSON文件
-    logger.info("#" * 50)
-    logger.info(f"Start train fold: {requested_fold}")
-    logger.info("#" * 50)
-
-    train(config, requested_fold)
-
-    logger.info("#" * 50)
-    logger.info(f"finish train fold: {requested_fold}")
-    logger.info("#" * 50)
-
-    logger.info("#" * 50)
-    logger.info("finish train folds: %s", [requested_fold])
-    logger.info("#" * 50)
 
 
 if __name__ == "__main__":

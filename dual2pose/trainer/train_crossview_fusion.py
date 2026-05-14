@@ -22,7 +22,7 @@ class CrossViewFusionTrainer(LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        model_cfg = getattr(hparams, "crossview_fusion", None)
+        model_cfg = getattr(hparams, "cross_view_fusion", None)
         self.lr = float(getattr(hparams.loss, "lr", 0.1))
         self.weight_decay = float(
             getattr(

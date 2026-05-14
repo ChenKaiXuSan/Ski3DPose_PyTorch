@@ -1,0 +1,5 @@
+weight_decay: 0.01
+lambda_view_recon: 0.05
+lambda_alpha_balance: 0.02
+lambda_alpha_entropy: 0.005
+lambda_temporal_smooth: 0.01

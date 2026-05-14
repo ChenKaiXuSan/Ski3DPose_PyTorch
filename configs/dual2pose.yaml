@@ -6,6 +6,9 @@ hydra:
     dir: logs/
     subdir: ${experiment}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
+defaults:
+  - model: cross_view_fusion
+
 loss:
   lr: 0.001
   weight_decay: 0.01
@@ -68,38 +71,6 @@ train:
 
   gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
   fold: 0 # the fold number for cross validation
-
-dual2pose:
-  num_joints: 15
-  weight_decay: 0.01
-
-  # Pre-align right-view 3D pose to left-view coordinates before fusion.
-  rigid_align_right_to_left: true
-  rigid_align_ref_variant: character
-
-  d_model: 256
-  n_layers: 4
-  use_conf: true
-  predict_logvar: false
-
-  # frame branch
-  use_dino_features: false
-  dino_model_name: facebook/dinov2-base
-  dino_freeze: false
-  dino_image_size: 224
-  dino_feature_dim: 768
-
-  lambda_view_recon: 0.05
-  lambda_alpha_balance: 0.02
-  lambda_alpha_entropy: 0.005
-  lambda_p0_supervise: 0.2
-
-  lambda_mpjpe: 1.0
-  lambda_bone: 0.1
-  lambda_vel: 0.05
-  lambda_acc: 0.02
-  lambda_agree: 0.1
-  lambda_bone_stab: 0.05
 
 log_path: logs/train_unity/${model.backbone}/${now:%Y-%m-%d}/${now:%H-%M-%S} # the log path, used for log and checkpoint
 
