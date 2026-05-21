@@ -94,7 +94,7 @@ def init_params(config):
     metrics = trainer.test(
         classification_module,
         unity_data_module,
-        ckpt_path="/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-13/fold_0/checkpoints/fold_0/last.ckpt",
+        ckpt_path="/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt",
     )
 
     logger.info(f"Test metrics: {metrics}")

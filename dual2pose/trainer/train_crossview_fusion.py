@@ -151,7 +151,7 @@ class CrossViewFusionTrainer(LightningModule):
             self.log(
                 f"{stage}/mpjpe",
                 mpjpe,
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
                 prog_bar=True,
                 batch_size=fused.shape[0],
@@ -208,14 +208,14 @@ class CrossViewFusionTrainer(LightningModule):
         self.log(
             f"{stage}/alpha_mean",
             alpha.mean(),
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
         self.log(
             f"{stage}/alpha_std",
             alpha.std(),
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
@@ -223,7 +223,7 @@ class CrossViewFusionTrainer(LightningModule):
         self.log(
             f"{stage}/cross_view_gap",
             cv_gap,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
@@ -231,21 +231,21 @@ class CrossViewFusionTrainer(LightningModule):
         self.log(
             f"{stage}/recon_left",
             loss_recon_left,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
         self.log(
             f"{stage}/recon_right",
             loss_recon_right,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
         self.log(
             f"{stage}/recon_view",
             loss_view_recon,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             prog_bar=True,
             batch_size=fused.shape[0],
@@ -253,14 +253,14 @@ class CrossViewFusionTrainer(LightningModule):
         self.log(
             f"{stage}/loss_alpha_balance",
             loss_alpha_balance,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
         self.log(
             f"{stage}/alpha_entropy",
             alpha_entropy,
-            on_step=True,
+            on_step=False,
             on_epoch=True,
             batch_size=fused.shape[0],
         )
@@ -276,6 +276,9 @@ class CrossViewFusionTrainer(LightningModule):
             "p_left_recon": p_left_recon,
             "p_right_recon": p_right_recon,
             "ground_truth": p_gt if p_gt is not None else None,
+            "ground_truth_canonical": (
+                gt_canonical if gt_canonical is not None else None
+            ),
         }
 
         # Store variant results in batch for later use
@@ -317,16 +320,6 @@ class CrossViewFusionTrainer(LightningModule):
 
         save_dir = self.test_save_dir
 
-        fused_mpjpes = []
-        left_raw_mpjpes = []
-        right_raw_mpjpes = []
-        left_canonical_mpjpes = []
-        right_canonical_mpjpes = []
-        left_recon_mpjpes = []
-        right_recon_mpjpes = []
-        pesudo_fuse_mpjpes = []
-        pesudo_canonical_fuse_mpjpes = []
-
         # per-joint collectors: each element shape (B, T, J)
         all_fused_per_joint = []
         all_left_raw_per_joint = []
@@ -348,51 +341,36 @@ class CrossViewFusionTrainer(LightningModule):
             p_left_recon = output.get("p_left_recon")
             p_right_recon = output.get("p_right_recon")
             ground_truth = output.get("ground_truth")
+            ground_truth_canonical = output.get("ground_truth_canonical")
 
             # calc mpjpe
-            fused_mpjpe_per_point, fused_mpjpe = self._safe_mpjpe(fused, ground_truth)
+            fused_mpjpe_per_point, _ = self._safe_mpjpe(fused, ground_truth_canonical)
 
-            left_raw_mpjpe_per_point, left_raw_mpjpe = self._safe_mpjpe(
-                p_left, ground_truth
-            )
-            right_raw_mpjpe_per_point, right_raw_mpjpe = self._safe_mpjpe(
-                p_right, ground_truth
-            )
+            left_raw_mpjpe_per_point, _ = self._safe_mpjpe(p_left, ground_truth)
+            right_raw_mpjpe_per_point, _ = self._safe_mpjpe(p_right, ground_truth)
 
-            left_canonical_mpjpe_per_point, left_canonical_mpjpe = self._safe_mpjpe(
-                left_canonical, ground_truth
+            left_canonical_mpjpe_per_point, _ = self._safe_mpjpe(
+                left_canonical, ground_truth_canonical
             )
-            right_canonical_mpjpe_per_point, right_canonical_mpjpe = self._safe_mpjpe(
-                right_canonical, ground_truth
+            right_canonical_mpjpe_per_point, _ = self._safe_mpjpe(
+                right_canonical, ground_truth_canonical
             )
 
-            left_recon_mpjpe_per_point, left_recon_mpjpe = self._safe_mpjpe(
+            # Reconstruction error should be measured against canonical inputs.
+            left_recon_mpjpe_per_point, _ = self._safe_mpjpe(
                 p_left_recon, left_canonical
             )
-            right_recon_mpjpe_per_point, right_recon_mpjpe = self._safe_mpjpe(
+            right_recon_mpjpe_per_point, _ = self._safe_mpjpe(
                 p_right_recon, right_canonical
             )
 
             pesudo_fuse = 0.5 * (p_left + p_right)
-            pesudo_fuse_mpjpe_per_point, pesudo_fuse_mpjpe = self._safe_mpjpe(
-                pesudo_fuse, ground_truth
-            )
+            pesudo_fuse_mpjpe_per_point, _ = self._safe_mpjpe(pesudo_fuse, ground_truth)
 
             pesudo_canonical_fuse = 0.5 * (left_canonical + right_canonical)
-            pesudo_canonical_fuse_mpjpe_per_point, pesudo_canonical_fuse_mpjpe = (
-                self._safe_mpjpe(pesudo_canonical_fuse, ground_truth)
+            pesudo_canonical_fuse_mpjpe_per_point, _ = self._safe_mpjpe(
+                pesudo_canonical_fuse, ground_truth_canonical
             )
-
-            fused_mpjpes.append(fused_mpjpe)
-            left_canonical_mpjpes.append(left_canonical_mpjpe)
-            right_canonical_mpjpes.append(right_canonical_mpjpe)
-            left_recon_mpjpes.append(left_recon_mpjpe)
-            right_recon_mpjpes.append(right_recon_mpjpe)
-
-            pesudo_fuse_mpjpes.append(pesudo_fuse_mpjpe)
-            pesudo_canonical_fuse_mpjpes.append(pesudo_canonical_fuse_mpjpe)
-            left_raw_mpjpes.append(left_raw_mpjpe)
-            right_raw_mpjpes.append(right_raw_mpjpe)
 
             # collect per-joint tensors (B, T, J) -> flatten to (N, J)
             all_fused_per_joint.append(
@@ -423,9 +401,16 @@ class CrossViewFusionTrainer(LightningModule):
                 pesudo_canonical_fuse_mpjpe_per_point.detach().cpu().flatten(0, -2)
             )
 
-        # aggregate per-joint MPJPE across all batches: shape (N_total, J)
+        # aggregate metrics across all samples: concatenate (N, J) then reduce.
         def _per_joint_mean(lst):
+            if not lst:
+                return []
             return torch.cat(lst, dim=0).mean(dim=0).tolist()  # list of length J
+
+        def _global_mean(lst):
+            if not lst:
+                return float("nan")
+            return float(torch.cat(lst, dim=0).mean().item())
 
         per_joint_stats = {
             "fused": _per_joint_mean(all_fused_per_joint),
@@ -441,29 +426,21 @@ class CrossViewFusionTrainer(LightningModule):
             ),
         }
 
-        # report summary
-        summary = {
-            "fused_mpjpe_mean": float(torch.tensor(fused_mpjpes).mean().item()),
-            "left_raw_mpjpe_mean": float(torch.tensor(left_raw_mpjpes).mean().item()),
-            "right_raw_mpjpe_mean": float(torch.tensor(right_raw_mpjpes).mean().item()),
-            "left_canonical_mpjpe_mean": float(
-                torch.tensor(left_canonical_mpjpes).mean().item()
+        gt_summary = {
+            "fused_mpjpe_mean": _global_mean(all_fused_per_joint),
+            "left_raw_mpjpe_mean": _global_mean(all_left_raw_per_joint),
+            "right_raw_mpjpe_mean": _global_mean(all_right_raw_per_joint),
+            "left_canonical_mpjpe_mean": _global_mean(all_left_canonical_per_joint),
+            "right_canonical_mpjpe_mean": _global_mean(all_right_canonical_per_joint),
+            "pesudo_fuse_mpjpe_mean": _global_mean(all_pesudo_fuse_per_joint),
+            "pesudo_canonical_fuse_mpjpe_mean": _global_mean(
+                all_pesudo_canonical_fuse_per_joint
             ),
-            "right_canonical_mpjpe_mean": float(
-                torch.tensor(right_canonical_mpjpes).mean().item()
-            ),
-            "left_recon_mpjpe_mean": float(
-                torch.tensor(left_recon_mpjpes).mean().item()
-            ),
-            "right_recon_mpjpe_mean": float(
-                torch.tensor(right_recon_mpjpes).mean().item()
-            ),
-            "pesudo_fuse_mpjpe_mean": float(
-                torch.tensor(pesudo_fuse_mpjpes).mean().item()
-            ),
-            "pesudo_canonical_fuse_mpjpe_mean": float(
-                torch.tensor(pesudo_canonical_fuse_mpjpes).mean().item()
-            ),
+        }
+
+        recon_summary = {
+            "left_recon_mpjpe_mean": _global_mean(all_left_recon_per_joint),
+            "right_recon_mpjpe_mean": _global_mean(all_right_recon_per_joint),
         }
 
         # save results
@@ -475,11 +452,32 @@ class CrossViewFusionTrainer(LightningModule):
         with open(txt_file, "w", encoding="utf-8") as f:
             f.write("Cross-View Fusion Test Report\n")
             f.write("=" * 40 + "\n")
-            f.write("[Overall MPJPE]\n")
-            for k, v in summary.items():
+            f.write("[MPJPE vs Ground Truth]\n")
+            for k, v in gt_summary.items():
                 f.write(f"{k}: {v:.4f}\n")
-            f.write("\n[Per-Joint MPJPE (joint index: mean error)]\n")
-            for variant_name, joint_values in per_joint_stats.items():
+
+            f.write("\n[Reconstruction Error (vs canonical input)]\n")
+            for k, v in recon_summary.items():
+                f.write(f"{k}: {v:.4f}\n")
+
+            f.write("\n[Per-Joint MPJPE vs Ground Truth (joint index: mean error)]\n")
+            for variant_name in [
+                "fused",
+                "left_raw",
+                "right_raw",
+                "left_canonical",
+                "right_canonical",
+                "pesudo_fuse",
+                "pesudo_canonical_fuse",
+            ]:
+                joint_values = per_joint_stats[variant_name]
+                f.write(f"  {variant_name}:\n")
+                for j, val in enumerate(joint_values):
+                    f.write(f"    joint_{j:02d}: {val:.4f}\n")
+
+            f.write("\n[Per-Joint Reconstruction Error (vs canonical input)]\n")
+            for variant_name in ["left_recon", "right_recon"]:
+                joint_values = per_joint_stats[variant_name]
                 f.write(f"  {variant_name}:\n")
                 for j, val in enumerate(joint_values):
                     f.write(f"    joint_{j:02d}: {val:.4f}\n")
