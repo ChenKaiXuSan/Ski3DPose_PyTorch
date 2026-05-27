@@ -22,7 +22,8 @@ Date      	By	Comments
 
 import logging
 import os
-
+import sys
+from pathlib import Path
 import hydra
 
 from pytorch_lightning import Trainer, seed_everything
@@ -30,6 +31,11 @@ from pytorch_lightning.callbacks import (
     RichProgressBar,
 )
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
+
+THIS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = THIS_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
 
@@ -44,12 +50,11 @@ logger = logging.getLogger(__name__)
 
 @hydra.main(
     version_base=None,
-    config_path="../configs",  # * the config_path is relative to location of the python script
+    config_path="../../configs",  # * the config_path is relative to location of the python script
     config_name="dual2pose.yaml",
 )
 def init_params(config):
-
-    config.train.gpu = 1
+    config.train.gpu = 0
 
     seed_everything(42, workers=True)
 

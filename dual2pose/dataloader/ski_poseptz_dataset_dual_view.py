@@ -7,13 +7,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-import h5py  # type: ignore[import-untyped]
 import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from map_config import filter_sam3d_body_kpts
+from map_config import filter_h36m_kpts, filter_sam3d_body_kpts
 
 
 class LabeledSkiPosePTZDataset(Dataset):
@@ -21,14 +20,15 @@ class LabeledSkiPosePTZDataset(Dataset):
 
     Each entry in the index mapping corresponds to one (sequence, subject,
     cam_pair) and contains all directory paths needed to load frames, SAM3D
-    2D/3D keypoints, and pseudo-GT.  Ground-truth 3D comes from labels.h5.
+    2D/3D keypoints, and pseudo-GT.  Ground-truth 3D comes from pseudo GT
+    exports only.
 
     Returned sample dict (keys present depend on load_* flags):
         {
             "frames":   {"cam1": Tensor[C,T,H,W], "cam2": Tensor[C,T,H,W]},
             "kpt2d":    {"cam1": Tensor[T,J,2],   "cam2": Tensor[T,J,2]},
             "kpt3d":    {"cam1": Tensor[T,J,3],   "cam2": Tensor[T,J,3]},
-            "gt_kpt3d": Tensor[T,J,3],   # always present (from labels.h5)
+            "gt_kpt3d": Tensor[T,J,3],   # always present (from pseudo GT)
             "frame_indices": Tensor[T],
             "meta": {"subj", "seq", "cam1", "cam2", "num_frames"},
         }
@@ -95,36 +95,32 @@ class LabeledSkiPosePTZDataset(Dataset):
         if not configs:
             raise ValueError("index_mapping contains no entries.")
 
-        # ── Cache labels.h5 data (one h5 file is shared by many configs) ───
-        self._h5_cache: Dict[str, Dict[str, np.ndarray]] = {}
+        self._pseudo_gt_cache: Dict[str, Dict[str, np.ndarray]] = {}
 
         # ── Build temporal sample list ──────────────────────────────────────
         self._samples = self._build_samples(configs)
         if not self._samples:
             raise ValueError("No valid temporal samples found in index_mapping.")
 
-    # ── labels.h5 helpers ────────────────────────────────────────────────────
+    def _load_pseudo_gt_npz(self, pseudo_gt_dir: str | Path) -> Dict[str, np.ndarray]:
+        pseudo_gt_path = Path(pseudo_gt_dir)
+        if pseudo_gt_path.is_dir():
+            npz_files = sorted(pseudo_gt_path.glob("*_pseudo_gt.npz"))
+            if not npz_files:
+                raise FileNotFoundError(f"pseudo GT npz not found in: {pseudo_gt_path}")
+            pseudo_gt_path = npz_files[0]
+        if not pseudo_gt_path.exists():
+            raise FileNotFoundError(f"pseudo GT npz not found: {pseudo_gt_path}")
 
-    def _load_h5(self, labels_h5: str) -> Dict[str, np.ndarray]:
-        if labels_h5 not in self._h5_cache:
-            with h5py.File(labels_h5, "r") as f:
-                seq   = np.asarray(f["seq"],   dtype=np.int32)
-                cam   = np.asarray(f["cam"],   dtype=np.int32)
-                frame = np.asarray(f["frame"], dtype=np.int32)
-                subj  = np.asarray(f["subj"],  dtype=np.int32)
-                pose_3d_raw = np.asarray(f["3D"], dtype=np.float32)
-            if pose_3d_raw.ndim == 2:
-                if pose_3d_raw.shape[1] % 3 != 0:
-                    raise ValueError(f"Invalid 3D shape in labels.h5: {pose_3d_raw.shape}")
-                pose_3d = pose_3d_raw.reshape(pose_3d_raw.shape[0], -1, 3)
-            elif pose_3d_raw.ndim == 3 and pose_3d_raw.shape[-1] == 3:
-                pose_3d = pose_3d_raw
-            else:
-                raise ValueError(f"Unsupported 3D keypoint shape: {pose_3d_raw.shape}")
-            self._h5_cache[labels_h5] = {
-                "seq": seq, "cam": cam, "frame": frame, "subj": subj, "pose_3d": pose_3d,
-            }
-        return self._h5_cache[labels_h5]
+        cache_key = str(pseudo_gt_path.resolve())
+        if cache_key not in self._pseudo_gt_cache:
+            with np.load(cache_key, allow_pickle=True) as data:
+                frames = np.asarray(data["frames"], dtype=np.int32)
+                poses = np.asarray(data["poses"], dtype=np.float32)
+            if poses.ndim != 3 or poses.shape[-1] != 3:
+                raise ValueError(f"Unsupported pseudo GT pose shape: {poses.shape}")
+            self._pseudo_gt_cache[cache_key] = {"frames": frames, "poses": poses}
+        return self._pseudo_gt_cache[cache_key]
 
     # ── SAM3D helpers ─────────────────────────────────────────────────────────
 
@@ -168,25 +164,22 @@ class LabeledSkiPosePTZDataset(Dataset):
             subj_id = int(cfg["subject_id"])
             cam1_id = int(cfg["cam1_id"])
             cam2_id = int(cfg["cam2_id"])
-            labels_h5 = cfg["labels_h5"]
+            pseudo_gt_dir = cfg.get("pesudo_gt_kpt3d_dir")
+            if not pseudo_gt_dir:
+                raise KeyError("pesudo_gt_kpt3d_dir is required for pseudo-GT evaluation")
 
-            h5 = self._load_h5(labels_h5)
+            pseudo_gt = self._load_pseudo_gt_npz(pseudo_gt_dir)
+            common_frames = [int(frame_id) for frame_id in pseudo_gt["frames"]]
 
-            # Row indices for this (subj, seq) combination
-            mask = (h5["subj"] == subj_id) & (h5["seq"] == seq_id)
-            rows = np.where(mask)[0]
-
-            cam1_frame_to_row: Dict[int, int] = {}
-            cam2_frame_to_row: Dict[int, int] = {}
-            for row_idx in rows:
-                c = int(h5["cam"][row_idx])
-                f = int(h5["frame"][row_idx])
-                if c == cam1_id:
-                    cam1_frame_to_row[f] = int(row_idx)
-                elif c == cam2_id:
-                    cam2_frame_to_row[f] = int(row_idx)
-
-            common_frames = sorted(set(cam1_frame_to_row) & set(cam2_frame_to_row))
+            cam1_frame_set = {
+                int(path.stem.split("_")[-1])
+                for path in Path(cfg["cam1_frames_dir"]).glob("image_*.png")
+            }
+            cam2_frame_set = {
+                int(path.stem.split("_")[-1])
+                for path in Path(cfg["cam2_frames_dir"]).glob("image_*.png")
+            }
+            common_frames = [f for f in common_frames if f in cam1_frame_set and f in cam2_frame_set]
 
             # Exclude frames with no SAM3D detection
             if self._load_2d_kpt or self._load_3d_kpt:
@@ -212,14 +205,14 @@ class LabeledSkiPosePTZDataset(Dataset):
                 "subj":   subj_id,
                 "cam1_id": cam1_id,
                 "cam2_id": cam2_id,
-                "labels_h5":        labels_h5,
                 "cam1_frames_dir":  cfg["cam1_frames_dir"],
                 "cam2_frames_dir":  cfg["cam2_frames_dir"],
                 "cam1_sam3d_dir":   cfg["cam1_sam3d_kpt3d_dir"],
                 "cam2_sam3d_dir":   cfg["cam2_sam3d_kpt3d_dir"],
                 "pesudo_gt_kpt3d_dir": cfg["pesudo_gt_kpt3d_dir"],
                 "frame_indices":    common_frames,
-                "row_indices_cam1": [cam1_frame_to_row[f] for f in common_frames],
+                "pseudo_gt_frames": pseudo_gt["frames"],
+                "pseudo_gt_poses": pseudo_gt["poses"],
             })
         return out
 
@@ -260,13 +253,11 @@ class LabeledSkiPosePTZDataset(Dataset):
         sample = self._samples[index]
 
         frame_indices    = list(sample["frame_indices"])
-        row_indices_cam1 = list(sample["row_indices_cam1"])
 
         # Temporal subsampling
         if len(frame_indices) != self._target_t:
             sel = self._temporal_select_indices(len(frame_indices), self._target_t).tolist()
             frame_indices    = [frame_indices[int(i)]    for i in sel]
-            row_indices_cam1 = [row_indices_cam1[int(i)] for i in sel]
 
         cam1_dir = Path(sample["cam1_frames_dir"])
         cam2_dir = Path(sample["cam2_frames_dir"])
@@ -318,11 +309,25 @@ class LabeledSkiPosePTZDataset(Dataset):
             ], dim=0)
             result["kpt3d"] = {"cam1": kpt3d_cam1, "cam2": kpt3d_cam2}
 
-        # ── Ground-truth 3D from labels.h5 (cam1 rows) ──────────────────────
-        h5 = self._load_h5(sample["labels_h5"])
+        # ── Ground-truth 3D from pseudo GT export ──────────────────────────
+        pseudo_gt_frames = np.asarray(sample["pseudo_gt_frames"], dtype=np.int32)
+        pseudo_gt_poses = np.asarray(sample["pseudo_gt_poses"], dtype=np.float32)
+        frame_to_idx = {
+            int(frame_id): int(i)
+            for i, frame_id in enumerate(pseudo_gt_frames)
+        }
+        missing_frames = [int(frame_id) for frame_id in frame_indices if int(frame_id) not in frame_to_idx]
+        if missing_frames:
+            raise KeyError(
+                f"Missing pseudo GT frames for sample {index}: {missing_frames[:5]}"
+            )
         result["gt_kpt3d"] = torch.stack([
-            torch.from_numpy(np.asarray(h5["pose_3d"][r], dtype=np.float32))
-            for r in row_indices_cam1
+            torch.from_numpy(
+                filter_h36m_kpts(
+                    np.asarray(pseudo_gt_poses[frame_to_idx[int(frame_id)]], dtype=np.float32)
+                )
+            )
+            for frame_id in frame_indices
         ], dim=0)  # (T,J,3)
 
         result["frame_indices"] = torch.tensor(frame_indices, dtype=torch.long)

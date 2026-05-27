@@ -101,32 +101,33 @@ FILTERED_KPTS_MAPPING = {
     14: "neck_01",
 }
 
-SKI_MAPPING = {
-    0: "ski_left_center",
-    1: "ski_left_front",
-    2: "ski_left_back",
-    3: "ski_right_center",
-    4: "ski_right_front",
-    5: "ski_right_back",
+# Ski-PosePTZ / H36M common subset after removing joints without a
+# one-to-one correspondence to FILTERED_KPTS_MAPPING.
+SKI_PTZ_COMMON_KPTS_MAPPING = {
+    0: "Upperarm_L",
+    1: "Upperarm_R",
+    2: "lowerarm_l",
+    3: "lowerarm_r",
+    4: "Thigh_L",
+    5: "Thigh_R",
+    6: "calf_l",
+    7: "calf_r",
+    8: "Foot_L",
+    9: "Foot_R",
+    10: "Hand_R",
+    11: "Hand_L",
+    12: "neck_01",
 }
 
-POLE_MAPPING = {
-    0: "pole_left_handle",
-    1: "pole_left_tip",
-    2: "pole_right_handle",
-    3: "pole_right_tip",
-}
+# Indices in FILTERED_KPTS_MAPPING that correspond to the Ski-PosePTZ common
+# subset above. This removes the two eye joints and keeps the remaining 13.
+FILTERED_15_TO_COMMON_13_INDICES = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
-OBJ_MAPPING = {
-    0: "left_ski_front",
-    1: "left_ski_back",
-    2: "right_ski_front",
-    3: "right_ski_back",
-    4: "left_pole_handle",
-    5: "left_pole_tip",
-    6: "right_pole_handle",
-    7: "right_pole_tip",
-}
+# Source order assumed here:
+# [hip, right_up_leg, right_leg, right_foot, left_up_leg, left_leg,
+#  left_foot, spine1, neck, head, head-top, left-arm, left_forearm,
+#  left_hand, right-arm, right_forearm, right_hand]
+H36M_17_TO_COMMON_13_INDICES = [11, 14, 12, 15, 4, 1, 5, 2, 6, 3, 16, 13, 8]
 
 # Skeleton connections after filtering, represented by contiguous joint indices.
 
@@ -258,6 +259,40 @@ def filter_sam3d_body_kpts(kpts: np.ndarray) -> np.ndarray:
     if max(selected) >= arr.shape[0]:
         raise IndexError(
             f"SAM3D_BODY_MAPPING index out of range for source shape {arr.shape}."
+        )
+    return arr[selected]
+
+
+def filter_filtered_kpts_to_common(kpts: np.ndarray) -> np.ndarray:
+    """Filter the current 15-joint filtered pose to the 13-joint common subset.
+
+    This is used when comparing against Ski-PosePTZ H36M-style GT labels that
+    do not contain eye joints.
+    """
+
+    arr = _normalize_kpts_array(kpts)
+    selected = FILTERED_15_TO_COMMON_13_INDICES
+    if max(selected) >= arr.shape[0]:
+        raise IndexError(
+            f"FILTERED_15_TO_COMMON_13_INDICES index out of range for source shape {arr.shape}."
+        )
+    return arr[selected]
+
+
+def filter_h36m_kpts(kpts: np.ndarray) -> np.ndarray:
+    """Filter H36M 17-joint poses to the 13-joint subset shared with the
+    current filtered model output.
+
+    This removes joints that do not have a direct counterpart in
+    FILTERED_KPTS_MAPPING, namely hip, spine1, head, head-top, and the two eye
+    joints.
+    """
+
+    arr = _normalize_kpts_array(kpts)
+    selected = H36M_17_TO_COMMON_13_INDICES
+    if max(selected) >= arr.shape[0]:
+        raise IndexError(
+            f"H36M_17_TO_COMMON_13_INDICES index out of range for source shape {arr.shape}."
         )
     return arr[selected]
 

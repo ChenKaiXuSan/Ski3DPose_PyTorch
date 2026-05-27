@@ -22,6 +22,11 @@ class CrossViewFusionTrainer(LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
+        data_cfg = getattr(hparams, "data", None)
+        self.left_hip_idx = int(getattr(data_cfg, "left_hip_idx", 6))
+        self.right_hip_idx = int(getattr(data_cfg, "right_hip_idx", 7))
+        self.neck_idx = int(getattr(data_cfg, "neck_idx", 14))
+
         model_cfg = getattr(hparams, "cross_view_fusion", None)
         self.lr = float(getattr(hparams.loss, "lr", 0.1))
         self.weight_decay = float(
@@ -112,11 +117,30 @@ class CrossViewFusionTrainer(LightningModule):
         p_left, p_right, p_gt = self._get_character_data(batch)
 
         # canonicalize
-        left_canonical, left_transform = canonicalize_pose_torch(p_left)
+        left_canonical, left_transform = canonicalize_pose_torch(
+            p_left,
+            left_hip=self.left_hip_idx,
+            right_hip=self.right_hip_idx,
+            neck=self.neck_idx,
+        )
 
-        right_canonical, right_transform = canonicalize_pose_torch(p_right)
+        right_canonical, right_transform = canonicalize_pose_torch(
+            p_right,
+            left_hip=self.left_hip_idx,
+            right_hip=self.right_hip_idx,
+            neck=self.neck_idx,
+        )
 
-        gt_canonical, _ = canonicalize_pose_torch(p_gt) if p_gt is not None else None
+        gt_canonical, _ = (
+            canonicalize_pose_torch(
+                p_gt,
+                left_hip=self.left_hip_idx,
+                right_hip=self.right_hip_idx,
+                neck=self.neck_idx,
+            )
+            if p_gt is not None
+            else None
+        )
 
         # Forward pass
         fused, aux = self.models(
@@ -148,12 +172,21 @@ class CrossViewFusionTrainer(LightningModule):
                 "loss": loss_sup,
             }
             mpjpe = torch.norm(fused - gt_canonical, dim=-1).mean()
+            accel_err = self._safe_accel_err(fused, gt_canonical)[1]
             self.log(
                 f"{stage}/mpjpe",
                 mpjpe,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
+                batch_size=fused.shape[0],
+            )
+            self.log(
+                f"{stage}/accel_err",
+                accel_err,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
                 batch_size=fused.shape[0],
             )
         else:
@@ -316,6 +349,21 @@ class CrossViewFusionTrainer(LightningModule):
         _mean = mpjpe_per_point.mean().item()
         return mpjpe_per_point, _mean
 
+    @staticmethod
+    def _safe_accel_err(
+        pred: torch.Tensor, label: torch.Tensor
+    ) -> tuple[torch.Tensor, float]:
+        """Acceleration error against GT via second-order temporal differences."""
+        if pred.shape[1] < 3 or label.shape[1] < 3:
+            empty = pred.new_zeros((*pred.shape[:1], 0, pred.shape[2]))
+            return empty, float("nan")
+
+        pred_acc = pred[:, 2:] - 2.0 * pred[:, 1:-1] + pred[:, :-2]
+        label_acc = label[:, 2:] - 2.0 * label[:, 1:-1] + label[:, :-2]
+        accel_err_per_point = torch.norm(pred_acc - label_acc, dim=-1)
+        _mean = accel_err_per_point.mean().item()
+        return accel_err_per_point, _mean
+
     def on_test_epoch_end(self) -> None:
 
         save_dir = self.test_save_dir
@@ -330,6 +378,15 @@ class CrossViewFusionTrainer(LightningModule):
         all_right_recon_per_joint = []
         all_pesudo_fuse_per_joint = []
         all_pesudo_canonical_fuse_per_joint = []
+
+        # acceleration-error collectors: each element shape (B, T-2, J)
+        all_fused_accel_err = []
+        all_left_raw_accel_err = []
+        all_right_raw_accel_err = []
+        all_left_canonical_accel_err = []
+        all_right_canonical_accel_err = []
+        all_pesudo_fuse_accel_err = []
+        all_pesudo_canonical_fuse_accel_err = []
 
         for output in self.test_outputs:
 
@@ -372,6 +429,24 @@ class CrossViewFusionTrainer(LightningModule):
                 pesudo_canonical_fuse, ground_truth_canonical
             )
 
+            fused_accel_per_point, _ = self._safe_accel_err(
+                fused, ground_truth_canonical
+            )
+            left_raw_accel_per_point, _ = self._safe_accel_err(p_left, ground_truth)
+            right_raw_accel_per_point, _ = self._safe_accel_err(p_right, ground_truth)
+            left_canonical_accel_per_point, _ = self._safe_accel_err(
+                left_canonical, ground_truth_canonical
+            )
+            right_canonical_accel_per_point, _ = self._safe_accel_err(
+                right_canonical, ground_truth_canonical
+            )
+            pesudo_fuse_accel_per_point, _ = self._safe_accel_err(
+                pesudo_fuse, ground_truth
+            )
+            pesudo_canonical_fuse_accel_per_point, _ = self._safe_accel_err(
+                pesudo_canonical_fuse, ground_truth_canonical
+            )
+
             # collect per-joint tensors (B, T, J) -> flatten to (N, J)
             all_fused_per_joint.append(
                 fused_mpjpe_per_point.detach().cpu().flatten(0, -2)
@@ -401,6 +476,29 @@ class CrossViewFusionTrainer(LightningModule):
                 pesudo_canonical_fuse_mpjpe_per_point.detach().cpu().flatten(0, -2)
             )
 
+            if fused_accel_per_point.numel() > 0:
+                all_fused_accel_err.append(
+                    fused_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_left_raw_accel_err.append(
+                    left_raw_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_right_raw_accel_err.append(
+                    right_raw_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_left_canonical_accel_err.append(
+                    left_canonical_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_right_canonical_accel_err.append(
+                    right_canonical_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_pesudo_fuse_accel_err.append(
+                    pesudo_fuse_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+                all_pesudo_canonical_fuse_accel_err.append(
+                    pesudo_canonical_fuse_accel_per_point.detach().cpu().flatten(0, -2)
+                )
+
         # aggregate metrics across all samples: concatenate (N, J) then reduce.
         def _per_joint_mean(lst):
             if not lst:
@@ -428,8 +526,8 @@ class CrossViewFusionTrainer(LightningModule):
 
         gt_summary = {
             "fused_mpjpe_mean": _global_mean(all_fused_per_joint),
-            "left_raw_mpjpe_mean": _global_mean(all_left_raw_per_joint),
-            "right_raw_mpjpe_mean": _global_mean(all_right_raw_per_joint),
+            "sam3d_left_mpjpe_mean": _global_mean(all_left_raw_per_joint),
+            "sam3d_right_mpjpe_mean": _global_mean(all_right_raw_per_joint),
             "left_canonical_mpjpe_mean": _global_mean(all_left_canonical_per_joint),
             "right_canonical_mpjpe_mean": _global_mean(all_right_canonical_per_joint),
             "pesudo_fuse_mpjpe_mean": _global_mean(all_pesudo_fuse_per_joint),
@@ -443,6 +541,18 @@ class CrossViewFusionTrainer(LightningModule):
             "right_recon_mpjpe_mean": _global_mean(all_right_recon_per_joint),
         }
 
+        accel_summary = {
+            "fused_accel_err_mean": _global_mean(all_fused_accel_err),
+            "sam3d_left_accel_err_mean": _global_mean(all_left_raw_accel_err),
+            "sam3d_right_accel_err_mean": _global_mean(all_right_raw_accel_err),
+            "left_canonical_accel_err_mean": _global_mean(all_left_canonical_accel_err),
+            "right_canonical_accel_err_mean": _global_mean(all_right_canonical_accel_err),
+            "pesudo_fuse_accel_err_mean": _global_mean(all_pesudo_fuse_accel_err),
+            "pesudo_canonical_fuse_accel_err_mean": _global_mean(
+                all_pesudo_canonical_fuse_accel_err
+            ),
+        }
+
         # save results
         save_file = save_dir / f"outputs.pt"
         torch.save(self.test_outputs, save_file)
@@ -452,25 +562,42 @@ class CrossViewFusionTrainer(LightningModule):
         with open(txt_file, "w", encoding="utf-8") as f:
             f.write("Cross-View Fusion Test Report\n")
             f.write("=" * 40 + "\n")
-            f.write("[MPJPE vs Ground Truth]\n")
+            f.write("[Canonical MPJPE vs Ground Truth]\n")
+            f.write("All values in this section compare canonicalized poses.\n")
             for k, v in gt_summary.items():
                 f.write(f"{k}: {v:.4f}\n")
 
+            f.write("\n[Raw SAM3D vs Ground Truth]\n")
+            f.write("These values compare the original pseudo GT poses before canonicalization.\n")
+            f.write(f"sam3d_cam1_mpjpe_mean: {gt_summary['sam3d_left_mpjpe_mean']:.4f}\n")
+            f.write(f"sam3d_cam2_mpjpe_mean: {gt_summary['sam3d_right_mpjpe_mean']:.4f}\n")
+
             f.write("\n[Reconstruction Error (vs canonical input)]\n")
+            f.write("This section is against canonicalized camera inputs.\n")
             for k, v in recon_summary.items():
                 f.write(f"{k}: {v:.4f}\n")
 
-            f.write("\n[Per-Joint MPJPE vs Ground Truth (joint index: mean error)]\n")
+            f.write("\n[Acceleration Error vs Ground Truth]\n")
+            f.write("All values compare second-order temporal differences against GT.\n")
+            for k, v in accel_summary.items():
+                f.write(f"{k}: {v:.4f}\n")
+
+            f.write("\n[Per-Joint Canonical MPJPE vs Ground Truth (joint index: mean error)]\n")
             for variant_name in [
                 "fused",
-                "left_raw",
-                "right_raw",
+                "sam3d_cam1",
+                "sam3d_cam2",
                 "left_canonical",
                 "right_canonical",
                 "pesudo_fuse",
                 "pesudo_canonical_fuse",
             ]:
-                joint_values = per_joint_stats[variant_name]
+                if variant_name == "sam3d_cam1":
+                    joint_values = per_joint_stats["left_raw"]
+                elif variant_name == "sam3d_cam2":
+                    joint_values = per_joint_stats["right_raw"]
+                else:
+                    joint_values = per_joint_stats[variant_name]
                 f.write(f"  {variant_name}:\n")
                 for j, val in enumerate(joint_values):
                     f.write(f"    joint_{j:02d}: {val:.4f}\n")
