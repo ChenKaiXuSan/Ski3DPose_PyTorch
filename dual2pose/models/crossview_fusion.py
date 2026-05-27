@@ -251,6 +251,10 @@ class CrossViewCanonicalFusion(nn.Module):
         hidden_dim=128,
         num_heads=4,
         dropout=0.1,
+        disable_aligned: bool = False,
+        disable_residual: bool = False,
+        disable_velocity: bool = False,
+        disable_rotvec: bool = False,
     ):
         super().__init__()
 
@@ -299,6 +303,12 @@ class CrossViewCanonicalFusion(nn.Module):
             nn.Linear(hidden_dim, 3),
         )
 
+        # ablation flags
+        self.disable_aligned = bool(disable_aligned)
+        self.disable_residual = bool(disable_residual)
+        self.disable_velocity = bool(disable_velocity)
+        self.disable_rotvec = bool(disable_rotvec)
+
     def forward(
         self,
         left_canon,
@@ -311,6 +321,10 @@ class CrossViewCanonicalFusion(nn.Module):
 
         vel_l = compute_velocity(left_canon)
         vel_r = compute_velocity(right_canon)
+        # optionally disable velocity feature
+        if getattr(self, "disable_velocity", False):
+            vel_l = torch.zeros_like(vel_l)
+            vel_r = torch.zeros_like(vel_r)
 
         # =====================================================
         # sequence-level Sim3 alignment
@@ -333,6 +347,10 @@ class CrossViewCanonicalFusion(nn.Module):
 
         left_to_right_canon = left_to_right_flat.reshape(B, T, J, 3)
         right_to_left_canon = right_to_left_flat.reshape(B, T, J, 3)
+        # optionally disable aligned opposite-view poses
+        if getattr(self, "disable_aligned", False):
+            left_to_right_canon = torch.zeros_like(left_to_right_canon)
+            right_to_left_canon = torch.zeros_like(right_to_left_canon)
 
         # =====================================================
         # cross-view residual
@@ -340,6 +358,10 @@ class CrossViewCanonicalFusion(nn.Module):
 
         diff_lr = left_to_right_canon - right_canon
         diff_rl = right_to_left_canon - left_canon
+        # optionally disable explicit residuals
+        if getattr(self, "disable_residual", False):
+            diff_lr = torch.zeros_like(diff_lr)
+            diff_rl = torch.zeros_like(diff_rl)
 
         # =====================================================
         # rotation feature
@@ -359,6 +381,11 @@ class CrossViewCanonicalFusion(nn.Module):
         # -> (B,T,J,3)
         rotvec_lr = rotvec_lr[:, :, None, :].repeat(1, 1, J, 1)
         rotvec_rl = rotvec_rl[:, :, None, :].repeat(1, 1, J, 1)
+
+        # apply ablation switches: optionally zero out specific features
+        if self.disable_rotvec:
+            rotvec_lr = torch.zeros_like(rotvec_lr)
+            rotvec_rl = torch.zeros_like(rotvec_rl)
 
         # =====================================================
         # feature concat

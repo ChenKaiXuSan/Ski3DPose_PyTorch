@@ -96,6 +96,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-corruption", type=str, default="noise_masking", choices=["zero", "hold_last", "noise", "noise_masking"], help="How to corrupt masked keypoints.")
     parser.add_argument("--mask-temporal-span", type=int, default=10, help="Length of contiguous temporal masking segments.")
     parser.add_argument("--mask-noise-std", type=float, default=0.08, help="Noise std for masked joints.")
+    parser.add_argument(
+        "--output-path",
+        type=Path,
+        default=None,
+        help="Optional base output path for this sweep. Overrides config.log_path.",
+    )
     return parser.parse_args()
 
 
@@ -329,7 +335,7 @@ def main() -> None:
 
     seed_everything(42, workers=True)
     config = _build_config(args)
-    base_log_path = Path(config.log_path)
+    base_log_path = Path(args.output_path) if getattr(args, "output_path", None) else Path(config.log_path)
 
     test_dataset = LabeledSkiPosePTZDataset(
         index_mapping=Path(config.data.ski_pose_ptz.index_mapping_path),
@@ -413,7 +419,8 @@ def main() -> None:
 
                 setting_dir = Path(config.log_path)
                 setting_dir.mkdir(parents=True, exist_ok=True)
-                report_path = setting_dir / "comparison_report.txt"
+                run_tag = args.ckpt_path.stem if getattr(args, "ckpt_path", None) else "run"
+                report_path = setting_dir / f"comparison_report_{setting_name}_{run_tag}.txt"
                 with open(report_path, "w", encoding="utf-8") as fp:
                     fp.write(f"Setting: {setting_name}\n")
                     fp.write(f"Mask view mode: {mask_view_mode}\n")
@@ -444,7 +451,8 @@ def main() -> None:
 
     summary_dir = base_log_path / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_csv = summary_dir / "mask_ratio_sweep.csv"
+    run_tag = args.ckpt_path.stem if getattr(args, "ckpt_path", None) else "run"
+    summary_csv = summary_dir / f"mask_ratio_sweep_{run_tag}.csv"
     with open(summary_csv, "w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(
             fp,

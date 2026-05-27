@@ -2,9 +2,6 @@
 hydra:
   run:
     dir: ${log_path} # the log path, used for log and checkpoint
-  sweep:
-    dir: logs/
-    subdir: ${experiment}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 defaults:
   - model: cross_view_fusion

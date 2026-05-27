@@ -542,7 +542,8 @@ def init_params(config: DictConfig | None = None) -> None:
         flat = _flatten_test_outputs(test_outputs)
         metrics = _summarize_outputs(flat=flat, failure_threshold=failure_threshold)
 
-        out_json = Path(run_cfg.log_path) / "occlusion_metrics.json"
+        run_tag = Path(ckpt_path).stem if ckpt_path else "run"
+        out_json = Path(run_cfg.log_path) / f"occlusion_metrics_{run_tag}.json"
         with open(out_json, "w", encoding="utf-8") as fp:
             json.dump(
                 {
@@ -586,7 +587,8 @@ def init_params(config: DictConfig | None = None) -> None:
             canonical_avg_mpjpe,
         )
 
-    summary_csv = results_root / "occlusion_summary.csv"
+    run_tag = Path(ckpt_path).stem if ckpt_path else "run"
+    summary_csv = results_root / f"occlusion_summary_{run_tag}.csv"
     fieldnames = [
         "setting",
         "view_mode",

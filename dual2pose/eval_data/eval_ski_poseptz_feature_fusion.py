@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-"""Evaluate Ski-PosePTZ checkpoints without masking sweeps.
+"""Run ablation variants for CrossView fusion on Ski-PosePTZ.
 
-This script runs a single clean evaluation and reports the fused result plus
-baseline comparisons against the raw and canonical averages.
+This script runs a set of ablation variants by toggling flags on the
+`CrossViewCanonicalFusion` instance inside the Lightning `CrossViewFusionTrainer`.
+It writes a CSV summary to `<ckpt_log>/summary/ablation_summary.csv`.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import importlib
 import math
-import os
 import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict
 
+import importlib
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer, seed_everything
@@ -54,31 +54,36 @@ DEFAULT_CKPT = Path(
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "dual2pose.yaml"
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Evaluate a trained dual2pose/crossview_fusion checkpoint on Ski-PosePTZ test split."
-    )
-    parser.add_argument("--ckpt-path", type=Path, default=DEFAULT_CKPT, help="Checkpoint path to evaluate.")
-    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG, help="Config file used to build the data module and model.")
-    parser.add_argument("--backbone", type=str, default="crossview_fusion", choices=["crossview_fusion", "dual2pose"], help="Model backbone to instantiate.")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"], help="Dataset split to evaluate.")
-    parser.add_argument("--batch-size", type=int, default=4, help="Test batch size.")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker count.")
-    parser.add_argument("--time-window", type=int, default=30, help="Temporal window used by the dataset.")
-    parser.add_argument("--gpu", type=int, default=0, help="CUDA device index to use when GPU is available.")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU evaluation.")
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Run ablation variants on Ski-PosePTZ")
+    parser.add_argument("--ckpt-path", type=Path, default=DEFAULT_CKPT)
+    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--variants", nargs="*", default=[
+        "full",
+        "no_aligned",
+        "no_residual",
+        "no_velocity",
+        "no_rotvec",
+        "no_residual_no_rotvec",
+    ])
+    parser.add_argument("--split", type=str, default="test")
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--time-window", type=int, default=30)
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--cpu", action="store_true")
     parser.add_argument(
         "--output-path",
         type=Path,
         default=None,
-        help="Optional output path for summaries. Overrides config.log_path.",
+        help="Optional base output path for ablation summaries. Overrides config.log_path.",
     )
     return parser.parse_args()
 
 
-def _build_config(args: argparse.Namespace):
+def _build_config(args):
     config = OmegaConf.load(str(args.config_path))
-    config.model.backbone = args.backbone
+    config.model.backbone = "crossview_fusion"
     config.data.left_hip_idx = 4
     config.data.right_hip_idx = 5
     config.data.neck_idx = 12
@@ -91,15 +96,6 @@ def _build_config(args: argparse.Namespace):
     ckpt_dir = args.ckpt_path.resolve().parent.parent
     config.log_path = str(ckpt_dir)
     return config
-
-
-def _build_model(config):
-    _, _, _, crossview_fusion_cls, dual2pose_cls = _repo_symbols()
-    if config.model.backbone == "crossview_fusion":
-        return crossview_fusion_cls(config)
-    if config.model.backbone == "dual2pose":
-        return dual2pose_cls(config)
-    raise ValueError(f"Unsupported backbone: {config.model.backbone}")
 
 
 def _collate_ski_poseptz_batch(batch):
@@ -193,11 +189,11 @@ def _summarize_test_outputs(test_outputs: list[Dict[str, torch.Tensor]]) -> Dict
 
 
 def _format_float(value: float) -> str:
-    return "nan" if math.isnan(value) else f"{value:.4f}"
+    return "nan" if math.isnan(value) else f"{value:.6f}"
 
 
 def main() -> None:
-    LabeledSkiPosePTZDataset, _, _, _, _ = _repo_symbols()
+    LabeledSkiPosePTZDataset, _, _, crossview_cls, _ = _repo_symbols()
     args = _parse_args()
     if not args.ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.ckpt_path}")
@@ -206,6 +202,7 @@ def main() -> None:
 
     seed_everything(42, workers=True)
     config = _build_config(args)
+    base_log_path = Path(args.output_path) if getattr(args, "output_path", None) else Path(config.log_path)
 
     test_dataset = LabeledSkiPosePTZDataset(
         index_mapping=Path(config.data.ski_pose_ptz.index_mapping_path),
@@ -216,104 +213,103 @@ def main() -> None:
         target_t=int(args.time_window),
         split=args.split,
     )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=int(args.batch_size),
-        shuffle=False,
-        drop_last=False,
-        num_workers=int(args.num_workers),
-        pin_memory=not args.cpu,
-        collate_fn=_collate_ski_poseptz_batch,
-    )
-    model = _build_model(config)
 
     use_gpu = torch.cuda.is_available() and not args.cpu
-    trainer = Trainer(
-        accelerator="gpu" if use_gpu else "cpu",
-        devices=[int(args.gpu)] if use_gpu else 1,
-        logger=False,
-        enable_checkpointing=False,
-        callbacks=[RichProgressBar(refresh_rate=10, leave=True)],
-    )
 
-    metrics = trainer.test(
-        model,
-        dataloaders=test_loader,
-        ckpt_path=str(args.ckpt_path),
-        verbose=True,
-    )
+    rows = []
+    for variant in args.variants:
+        setting_name = variant
+        config.log_path = str(base_log_path / setting_name)
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=int(args.batch_size),
+            shuffle=False,
+            drop_last=False,
+            num_workers=int(args.num_workers),
+            pin_memory=not args.cpu,
+            collate_fn=_collate_ski_poseptz_batch,
+        )
 
-    baseline_metrics = _summarize_test_outputs(list(getattr(model, "test_outputs", [])))
-    fused_mpjpe = metrics[0].get("test/mpjpe", metrics[0].get("mpjpe", float("nan"))) if metrics else float("nan")
-    fused_accel_err = metrics[0].get("test/accel_err", metrics[0].get("accel_err", float("nan"))) if metrics else float("nan")
-    canonical_avg_mpjpe = baseline_metrics.get("canonical_avg", {}).get("mpjpe", float("nan"))
-    canonical_avg_accel = baseline_metrics.get("canonical_avg", {}).get("accel_err", float("nan"))
-    raw_avg_mpjpe = baseline_metrics.get("raw_avg", {}).get("mpjpe", float("nan"))
-    raw_avg_accel = baseline_metrics.get("raw_avg", {}).get("accel_err", float("nan"))
+        model = crossview_cls(config)
 
-    summary_root = Path(args.output_path) if args.output_path else Path(config.log_path)
-    summary_dir = summary_root / "summary"
+        # map variant name to flags on the inner fusion model
+        flags = {
+            "disable_aligned": False,
+            "disable_residual": False,
+            "disable_velocity": False,
+            "disable_rotvec": False,
+        }
+        if variant == "no_aligned":
+            flags["disable_aligned"] = True
+        if variant == "no_residual":
+            flags["disable_residual"] = True
+        if variant == "no_velocity":
+            flags["disable_velocity"] = True
+        if variant == "no_rotvec":
+            flags["disable_rotvec"] = True
+        if variant == "no_residual_no_rotvec":
+            flags["disable_residual"] = True
+            flags["disable_rotvec"] = True
+
+        # set flags if inner model exists
+        if hasattr(model, "models") and model.models is not None:
+            for k, v in flags.items():
+                if hasattr(model.models, k):
+                    setattr(model.models, k, v)
+
+        trainer = Trainer(
+            accelerator="gpu" if use_gpu else "cpu",
+            devices=[int(args.gpu)] if use_gpu else 1,
+            logger=False,
+            enable_checkpointing=False,
+            callbacks=[RichProgressBar(refresh_rate=10, leave=True)],
+        )
+
+        metrics = trainer.test(
+            model,
+            dataloaders=test_loader,
+            ckpt_path=str(args.ckpt_path),
+            verbose=False,
+        )
+
+        flat_metrics = metrics[0] if metrics else {}
+        fused_mpjpe = flat_metrics.get("test/mpjpe", flat_metrics.get("mpjpe", float("nan")))
+        accel_err = flat_metrics.get("test/accel_err", flat_metrics.get("accel_err", float("nan")))
+
+        baseline_metrics = _summarize_test_outputs(list(getattr(model, "test_outputs", [])))
+        canonical_avg_mpjpe = baseline_metrics.get("canonical_avg", {}).get("mpjpe", float("nan"))
+        canonical_avg_accel = baseline_metrics.get("canonical_avg", {}).get("accel_err", float("nan"))
+        raw_avg_mpjpe = baseline_metrics.get("raw_avg", {}).get("mpjpe", float("nan"))
+        raw_avg_accel = baseline_metrics.get("raw_avg", {}).get("accel_err", float("nan"))
+
+        rows.append({
+            "variant": setting_name,
+            "mpjpe": float(fused_mpjpe),
+            "accel_err": float(accel_err),
+            "canonical_avg_mpjpe": float(canonical_avg_mpjpe),
+            "raw_avg_mpjpe": float(raw_avg_mpjpe),
+            "delta_mpjpe_full_minus_canonical_avg": float(fused_mpjpe - canonical_avg_mpjpe),
+            "delta_mpjpe_full_minus_raw_avg": float(fused_mpjpe - raw_avg_mpjpe),
+            "canonical_avg_accel_err": float(canonical_avg_accel),
+            "raw_avg_accel_err": float(raw_avg_accel),
+            "delta_accel_full_minus_canonical_avg": float(accel_err - canonical_avg_accel),
+            "delta_accel_full_minus_raw_avg": float(accel_err - raw_avg_accel),
+        })
+
+    # write summary CSV
+    summary_dir = Path(config.log_path).resolve().parent / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
-
     run_tag = args.ckpt_path.stem if getattr(args, "ckpt_path", None) else "run"
-    comparison_csv = summary_dir / f"baseline_comparison_{run_tag}.csv"
-    with open(comparison_csv, "w", encoding="utf-8", newline="") as fp:
-        writer = csv.DictWriter(
-            fp,
-            fieldnames=[
-                "fused_mpjpe",
-                "canonical_avg_mpjpe",
-                "raw_avg_mpjpe",
-                "delta_mpjpe_full_minus_canonical_avg",
-                "delta_mpjpe_full_minus_raw_avg",
-                "fused_accel_err",
-                "canonical_avg_accel_err",
-                "raw_avg_accel_err",
-                "delta_accel_full_minus_canonical_avg",
-                "delta_accel_full_minus_raw_avg",
-            ],
-        )
-        writer.writeheader()
-        writer.writerow(
-            {
-                "fused_mpjpe": fused_mpjpe,
-                "canonical_avg_mpjpe": canonical_avg_mpjpe,
-                "raw_avg_mpjpe": raw_avg_mpjpe,
-                "delta_mpjpe_full_minus_canonical_avg": fused_mpjpe - canonical_avg_mpjpe,
-                "delta_mpjpe_full_minus_raw_avg": fused_mpjpe - raw_avg_mpjpe,
-                "fused_accel_err": fused_accel_err,
-                "canonical_avg_accel_err": canonical_avg_accel,
-                "raw_avg_accel_err": raw_avg_accel,
-                "delta_accel_full_minus_canonical_avg": fused_accel_err - canonical_avg_accel,
-                "delta_accel_full_minus_raw_avg": fused_accel_err - raw_avg_accel,
-            }
-        )
+    out_path = summary_dir / f"ablation_summary_{run_tag}.csv"
+    if rows:
+        with open(out_path, "w", encoding="utf-8", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r)
 
-    report_path = summary_dir / f"report_{run_tag}.txt"
-    with open(report_path, "w", encoding="utf-8") as fp:
-        fp.write("Cross-View Fusion Test Report\n")
-        fp.write("=" * 40 + "\n")
-        fp.write("[Primary]\n")
-        fp.write(f"fused_mpjpe: {_format_float(fused_mpjpe)}\n")
-        fp.write(f"fused_accel_err: {_format_float(fused_accel_err)}\n")
-        fp.write("\n[Baselines]\n")
-        fp.write(f"canonical_avg_mpjpe: {_format_float(canonical_avg_mpjpe)}\n")
-        fp.write(f"raw_avg_mpjpe: {_format_float(raw_avg_mpjpe)}\n")
-        fp.write(f"delta_mpjpe_full_minus_canonical_avg: {_format_float(fused_mpjpe - canonical_avg_mpjpe)}\n")
-        fp.write(f"delta_mpjpe_full_minus_raw_avg: {_format_float(fused_mpjpe - raw_avg_mpjpe)}\n")
-        fp.write(f"canonical_avg_accel_err: {_format_float(canonical_avg_accel)}\n")
-        fp.write(f"raw_avg_accel_err: {_format_float(raw_avg_accel)}\n")
-        fp.write(f"delta_accel_full_minus_canonical_avg: {_format_float(fused_accel_err - canonical_avg_accel)}\n")
-        fp.write(f"delta_accel_full_minus_raw_avg: {_format_float(fused_accel_err - raw_avg_accel)}\n")
-
-    print("=== Test metrics ===")
-    for item in metrics:
-        for key, value in item.items():
-            print(f"{key}: {value}")
-    print(f"baseline comparison saved to: {comparison_csv}")
-    print(f"Report saved to: {report_path}")
+    print(f"Wrote ablation summary to: {out_path}")
 
 
 if __name__ == "__main__":
-    os.environ["HYDRA_FULL_ERROR"] = "1"
     main()

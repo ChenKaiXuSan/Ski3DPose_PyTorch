@@ -96,13 +96,46 @@ def init_params(config):
     )
 
     # save the metrics to file
+    ckpt_path = os.environ.get("EVAL_CKPT_PATH") or (
+        "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt"
+    )
     metrics = trainer.test(
         classification_module,
         unity_data_module,
-        ckpt_path="/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt",
+        ckpt_path=ckpt_path,
     )
 
     logger.info(f"Test metrics: {metrics}")
+
+    # persist metrics to output directory
+    run_tag = Path(ckpt_path).stem if ckpt_path else "run"
+    out_root = Path(os.environ.get("EVAL_OUTPUT_PATH", config.log_path))
+    out_dir = out_root / "unity_eval"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # write JSON
+    out_json = out_dir / f"metrics_{run_tag}.json"
+    try:
+        import json
+
+        with open(out_json, "w", encoding="utf-8") as fp:
+            json.dump({"metrics": metrics}, fp, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Failed to write JSON metrics")
+
+    # write CSV (flatten first record if present)
+    out_csv = out_dir / f"metrics_{run_tag}.csv"
+    try:
+        if metrics and isinstance(metrics, list) and len(metrics) > 0 and isinstance(metrics[0], dict):
+            import csv
+
+            with open(out_csv, "w", encoding="utf-8", newline="") as fp:
+                writer = csv.DictWriter(fp, fieldnames=list(metrics[0].keys()))
+                writer.writeheader()
+                for row in metrics:
+                    writer.writerow({k: (v if not isinstance(v, (list, dict)) else str(v)) for k, v in row.items()})
+    except Exception:
+        logger.exception("Failed to write CSV metrics")
 
 
 if __name__ == "__main__":
