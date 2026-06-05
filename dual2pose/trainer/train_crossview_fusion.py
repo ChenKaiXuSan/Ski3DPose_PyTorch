@@ -314,6 +314,12 @@ class CrossViewFusionTrainer(LightningModule):
             ),
         }
 
+        # Include input masks (if provided by the dataloader/collate)
+        kpt3d_mask = batch.get("kpt3d_mask", {})
+        if isinstance(kpt3d_mask, dict):
+            variant_results["mask_left"] = kpt3d_mask.get("cam1")
+            variant_results["mask_right"] = kpt3d_mask.get("cam2")
+
         # Store variant results in batch for later use
         batch["_variant_results"] = variant_results
 
