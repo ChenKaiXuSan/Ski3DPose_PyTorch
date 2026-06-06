@@ -2,11 +2,11 @@
 	"folders": [
 		{
 			"name": "code",
-			"path": "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch"
+			"path": "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch"
 		},
 		{
 			"name": "data",
-			"path": "/workspace/data"
+			"path": "/home/kaixu_chen/data/skiing"
 		},
 	],
 	"settings": {

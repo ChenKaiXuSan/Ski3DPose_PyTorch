@@ -131,16 +131,15 @@ class CrossViewFusionTrainer(LightningModule):
             neck=self.neck_idx,
         )
 
-        gt_canonical, _ = (
-            canonicalize_pose_torch(
+        if p_gt is not None:
+            gt_canonical, _ = canonicalize_pose_torch(
                 p_gt,
                 left_hip=self.left_hip_idx,
                 right_hip=self.right_hip_idx,
                 neck=self.neck_idx,
             )
-            if p_gt is not None
-            else None
-        )
+        else:
+            gt_canonical = None
 
         # Forward pass
         fused, aux = self.models(
@@ -348,9 +347,11 @@ class CrossViewFusionTrainer(LightningModule):
 
     @staticmethod
     def _safe_mpjpe(
-        pred: torch.Tensor, label: torch.Tensor
+        pred: torch.Tensor, label: torch.Tensor | None
     ) -> tuple[torch.Tensor, float]:
 
+        if label is None:
+            return pred.new_zeros(*pred.shape[:-1]), float("nan")
         mpjpe_per_point = torch.norm(pred - label, dim=-1)
         _mean = mpjpe_per_point.mean().item()
         return mpjpe_per_point, _mean
@@ -360,7 +361,7 @@ class CrossViewFusionTrainer(LightningModule):
         pred: torch.Tensor, label: torch.Tensor
     ) -> tuple[torch.Tensor, float]:
         """Acceleration error against GT via second-order temporal differences."""
-        if pred.shape[1] < 3 or label.shape[1] < 3:
+        if pred.shape[1] < 3 or label is None or label.shape[1] < 3:
             empty = pred.new_zeros((*pred.shape[:1], 0, pred.shape[2]))
             return empty, float("nan")
 
