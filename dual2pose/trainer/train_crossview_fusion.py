@@ -559,9 +559,9 @@ class CrossViewFusionTrainer(LightningModule):
             ),
         }
 
-        # save results
-        save_file = save_dir / f"outputs.pt"
-        torch.save(self.test_outputs, save_file)
+        # save results (disabled: eval scripts get tensors from memory via _flatten_test_outputs)
+        # save_file = save_dir / f"outputs.pt"
+        # torch.save(self.test_outputs, save_file)
 
         # report summary to txt
         txt_file = save_dir / f"report.txt"
