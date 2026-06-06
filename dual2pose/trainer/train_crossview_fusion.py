@@ -60,7 +60,9 @@ class CrossViewFusionTrainer(LightningModule):
         self.test_save_dir: Path = Path(self.save_root) / "summary"
 
     @staticmethod
-    def _get_character_data(batch: Dict[str, Any]) -> Tuple[
+    def _get_character_data(
+        batch: Dict[str, Any],
+    ) -> Tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor | None,
@@ -396,7 +398,6 @@ class CrossViewFusionTrainer(LightningModule):
         all_pesudo_canonical_fuse_accel_err = []
 
         for output in self.test_outputs:
-
             fused = output.get("fused")
             p_left = output.get("p_left")
             p_right = output.get("p_right")
@@ -553,7 +554,9 @@ class CrossViewFusionTrainer(LightningModule):
             "sam3d_left_accel_err_mean": _global_mean(all_left_raw_accel_err),
             "sam3d_right_accel_err_mean": _global_mean(all_right_raw_accel_err),
             "left_canonical_accel_err_mean": _global_mean(all_left_canonical_accel_err),
-            "right_canonical_accel_err_mean": _global_mean(all_right_canonical_accel_err),
+            "right_canonical_accel_err_mean": _global_mean(
+                all_right_canonical_accel_err
+            ),
             "pesudo_fuse_accel_err_mean": _global_mean(all_pesudo_fuse_accel_err),
             "pesudo_canonical_fuse_accel_err_mean": _global_mean(
                 all_pesudo_canonical_fuse_accel_err
@@ -575,9 +578,15 @@ class CrossViewFusionTrainer(LightningModule):
                 f.write(f"{k}: {v:.4f}\n")
 
             f.write("\n[Raw SAM3D vs Ground Truth]\n")
-            f.write("These values compare the original pseudo GT poses before canonicalization.\n")
-            f.write(f"sam3d_cam1_mpjpe_mean: {gt_summary['sam3d_left_mpjpe_mean']:.4f}\n")
-            f.write(f"sam3d_cam2_mpjpe_mean: {gt_summary['sam3d_right_mpjpe_mean']:.4f}\n")
+            f.write(
+                "These values compare the original pseudo GT poses before canonicalization.\n"
+            )
+            f.write(
+                f"sam3d_cam1_mpjpe_mean: {gt_summary['sam3d_left_mpjpe_mean']:.4f}\n"
+            )
+            f.write(
+                f"sam3d_cam2_mpjpe_mean: {gt_summary['sam3d_right_mpjpe_mean']:.4f}\n"
+            )
 
             f.write("\n[Reconstruction Error (vs canonical input)]\n")
             f.write("This section is against canonicalized camera inputs.\n")
@@ -585,11 +594,15 @@ class CrossViewFusionTrainer(LightningModule):
                 f.write(f"{k}: {v:.4f}\n")
 
             f.write("\n[Acceleration Error vs Ground Truth]\n")
-            f.write("All values compare second-order temporal differences against GT.\n")
+            f.write(
+                "All values compare second-order temporal differences against GT.\n"
+            )
             for k, v in accel_summary.items():
                 f.write(f"{k}: {v:.4f}\n")
 
-            f.write("\n[Per-Joint Canonical MPJPE vs Ground Truth (joint index: mean error)]\n")
+            f.write(
+                "\n[Per-Joint Canonical MPJPE vs Ground Truth (joint index: mean error)]\n"
+            )
             for variant_name in [
                 "fused",
                 "sam3d_cam1",
@@ -616,7 +629,6 @@ class CrossViewFusionTrainer(LightningModule):
                 for j, val in enumerate(joint_values):
                     f.write(f"    joint_{j:02d}: {val:.4f}\n")
 
-        logger.info("Saved pose predictions/labels to %s", save_file)
         logger.info("Saved test report to %s", txt_file)
 
     def configure_optimizers(self):

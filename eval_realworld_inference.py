@@ -285,12 +285,16 @@ def evaluate_checkpoint(ckpt_path: Path, runs: List[str], args: argparse.Namespa
             continue
 
         datamodule = RealWorldDataModule(dataset, batch_size=args.batch_size)
-        trainer_metrics = trainer.test(
-            model, datamodule=datamodule, ckpt_path=str(ckpt_path),
-            verbose=False, weights_only=False,
-        )
+        try:
+            trainer_metrics = trainer.test(
+                model, datamodule=datamodule, ckpt_path=str(ckpt_path),
+                verbose=False, weights_only=False,
+            )
+        except Exception as e:
+            print(f"  [WARN] Trainer test crashed ({e}), but test_outputs may have data")
+            trainer_metrics = []
 
-        outputs = list(getattr(model, "test_outputs", []))
+        outputs = list(getattr(model, "test_outputs", []) or [])
         if not outputs:
             print(f"  [WARN] No test outputs for {run_name}")
             all_results[run_name] = {"status": "no_outputs"}
@@ -312,12 +316,12 @@ def evaluate_checkpoint(ckpt_path: Path, runs: List[str], args: argparse.Namespa
             at = _cat("alpha")
             cl = _cat("left_canonical")
             cr = _cat("right_canonical")
-            if ft: fused_chunks.append(ft)
-            if lt: left_chunks.append(lt)
-            if rt: right_chunks.append(rt)
-            if at: alpha_chunks.append(_squeeze_last(at))
-            if cl: canon_left_chunks.append(cl)
-            if cr: canon_right_chunks.append(cr)
+            if ft is not None and ft.numel() > 0: fused_chunks.append(ft)
+            if lt is not None and lt.numel() > 0: left_chunks.append(lt)
+            if rt is not None and rt.numel() > 0: right_chunks.append(rt)
+            if at is not None and at.numel() > 0: alpha_chunks.append(_squeeze_last(at))
+            if cl is not None and cl.numel() > 0: canon_left_chunks.append(cl)
+            if cr is not None and cr.numel() > 0: canon_right_chunks.append(cr)
 
         fused_all = torch.cat(fused_chunks, dim=0) if fused_chunks else None
         left_all = torch.cat(left_chunks, dim=0) if left_chunks else None

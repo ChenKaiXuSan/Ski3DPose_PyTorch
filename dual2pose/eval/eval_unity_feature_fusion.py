@@ -34,7 +34,12 @@ def _repo_symbols():
     eval_unity = importlib.import_module("dual2pose.eval_data.eval_unity_masking")
     fusion_module = importlib.import_module("dual2pose.trainer.train_crossview_fusion")
     dual_module = importlib.import_module("dual2pose.trainer.train_dual2pose")
-    return data_module.UnityDataModule, eval_unity, fusion_module.CrossViewFusionTrainer, dual_module.Dual2PoseTrainer
+    return (
+        data_module.UnityDataModule,
+        eval_unity,
+        fusion_module.CrossViewFusionTrainer,
+        dual_module.Dual2PoseTrainer,
+    )
 
 
 DEFAULT_CKPT = (
@@ -48,14 +53,18 @@ def _parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt-path", type=Path, default=Path(DEFAULT_CKPT))
     p.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG)
-    p.add_argument("--variants", nargs="*", default=[
-        "full",
-        "no_aligned",
-        "no_residual",
-        "no_velocity",
-        "no_rotvec",
-        "no_residual_no_rotvec",
-    ])
+    p.add_argument(
+        "--variants",
+        nargs="*",
+        default=[
+            "full",
+            "no_aligned",
+            "no_residual",
+            "no_velocity",
+            "no_rotvec",
+            "no_residual_no_rotvec",
+        ],
+    )
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--cpu", action="store_true")
     p.add_argument(
@@ -81,7 +90,9 @@ def _build_trainer(config, save_dir: Path):
 
 
 def main() -> None:
-    UnityDataModule, eval_unity, CrossViewFusionTrainer, Dual2PoseTrainer = _repo_symbols()
+    UnityDataModule, eval_unity, CrossViewFusionTrainer, Dual2PoseTrainer = (
+        _repo_symbols()
+    )
     args = _parse_args()
     if not args.ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.ckpt_path}")
@@ -93,7 +104,11 @@ def main() -> None:
     config.train.gpu = int(getattr(config.train, "gpu", 0))
 
     root_log = Path(str(config.log_path))
-    results_root = Path(args.output_path) if getattr(args, "output_path", None) else root_log / "occlusion_eval"
+    results_root = (
+        Path(args.output_path)
+        if getattr(args, "output_path", None)
+        else root_log / "occlusion_eval"
+    )
     results_root.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []

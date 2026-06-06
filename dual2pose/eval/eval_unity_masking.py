@@ -26,13 +26,16 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from pytorch_lightning import LightningDataModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import RichProgressBar
-from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 from torch.utils.data import DataLoader, default_collate
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
 
 @lru_cache(maxsize=1)
 def _repo_symbols():
@@ -50,10 +53,7 @@ UnityDataModule, CrossViewFusionTrainer, Dual2PoseTrainer = _repo_symbols()
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CKPT_PATH = (
-    "/workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/"
-    "crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt"
-)
+DEFAULT_CKPT_PATH = "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/02-46-56/checkpoints/fold_0/last.ckpt"
 
 
 @dataclass(frozen=True)
@@ -127,9 +127,13 @@ def _apply_hold_last(
     out = pose.clone()
     mask_btj = mask.squeeze(-1)
 
-    out[:, 0] = torch.where(mask_btj[:, 0].unsqueeze(-1), torch.zeros_like(out[:, 0]), out[:, 0])
+    out[:, 0] = torch.where(
+        mask_btj[:, 0].unsqueeze(-1), torch.zeros_like(out[:, 0]), out[:, 0]
+    )
     for ti in range(1, out.shape[1]):
-        out[:, ti] = torch.where(mask_btj[:, ti].unsqueeze(-1), out[:, ti - 1], out[:, ti])
+        out[:, ti] = torch.where(
+            mask_btj[:, ti].unsqueeze(-1), out[:, ti - 1], out[:, ti]
+        )
     return out
 
 
@@ -189,7 +193,9 @@ def _apply_occlusion_to_batch(
             raise ValueError(f"Expected pose shape (B,T,J,3), got {tuple(pose.shape)}")
 
         if setting.pattern == "random":
-            mask = _build_mask_random(shape=pose.shape, ratio=setting.ratio, device=pose.device)
+            mask = _build_mask_random(
+                shape=pose.shape, ratio=setting.ratio, device=pose.device
+            )
         elif setting.pattern == "distal":
             mask = _build_mask_distal(
                 shape=pose.shape,
@@ -213,7 +219,9 @@ def _apply_occlusion_to_batch(
             corruption=setting.corruption,
             noise_std=setting.noise_std,
         )
-        out["_occlusion"][f"{view_key}_mask_ratio_real"] = float(mask.float().mean().item())
+        out["_occlusion"][f"{view_key}_mask_ratio_real"] = float(
+            mask.float().mean().item()
+        )
 
     if setting.view_mode in ("left", "both"):
         _corrupt_view("cam1")
@@ -284,12 +292,16 @@ def _metric_jitter(pred: torch.Tensor) -> float:
     return float(torch.norm(acc_pred, dim=-1).mean().item())
 
 
-def _metric_failure_rate(pred: torch.Tensor, gt: torch.Tensor, threshold: float) -> float:
+def _metric_failure_rate(
+    pred: torch.Tensor, gt: torch.Tensor, threshold: float
+) -> float:
     frame_mpjpe = torch.norm(pred - gt, dim=-1).mean(dim=-1)
     return float((frame_mpjpe > threshold).float().mean().item())
 
 
-def _flatten_test_outputs(test_outputs: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+def _flatten_test_outputs(
+    test_outputs: List[Dict[str, Any]],
+) -> Dict[str, torch.Tensor]:
     keys = {
         "fused": [],
         "left_raw": [],
@@ -301,7 +313,10 @@ def _flatten_test_outputs(test_outputs: List[Dict[str, Any]]) -> Dict[str, torch
     }
 
     for output in test_outputs:
-        if output.get("ground_truth") is None or output.get("ground_truth_canonical") is None:
+        if (
+            output.get("ground_truth") is None
+            or output.get("ground_truth_canonical") is None
+        ):
             continue
         keys["fused"].append(output["fused"].detach().cpu())
         keys["left_raw"].append(output["p_left"].detach().cpu())
@@ -309,7 +324,9 @@ def _flatten_test_outputs(test_outputs: List[Dict[str, Any]]) -> Dict[str, torch
         keys["left_canonical"].append(output["left_canonical"].detach().cpu())
         keys["right_canonical"].append(output["right_canonical"].detach().cpu())
         keys["ground_truth"].append(output["ground_truth"].detach().cpu())
-        keys["ground_truth_canonical"].append(output["ground_truth_canonical"].detach().cpu())
+        keys["ground_truth_canonical"].append(
+            output["ground_truth_canonical"].detach().cpu()
+        )
 
     return {k: torch.cat(v, dim=0) for k, v in keys.items() if v}
 
@@ -350,126 +367,30 @@ def _summarize_outputs(
     return summary
 
 
-def _build_default_study(study_mode: str) -> List[OcclusionSetting]:
-    settings: List[OcclusionSetting] = [
-        OcclusionSetting(
-            name="clean",
-            view_mode="none",
-            pattern="random",
-            ratio=0.0,
-            corruption="noise_masking",
-        )
-    ]
+def _build_default_study() -> List[OcclusionSetting]:
+    settings: List[OcclusionSetting] = []
 
-    if study_mode == "minimal":
-        ratios = [0.10, 0.20, 0.30]
-        for ratio in ratios:
-            pct = int(round(ratio * 100))
-            settings.append(
-                OcclusionSetting(
-                    name=f"random_left_{pct}",
-                    view_mode="left",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
+    # Full sweep: 4 view_modes (none/left/right/both) x 3 patterns x ratio 0-1 step 0.05
+    ratios = [
+        round(i * 0.05, 2) for i in range(int(1.0 / 0.05) + 1)
+    ]  # ~21 points: 0.0 -- 1.0
+    view_modes = ["none", "left", "right", "both"]
+    patterns = ["random", "distal", "temporal"]
+    for view_mode in view_modes:
+        ratios_for_view = [0.0] if view_mode == "none" else ratios
+        for pattern in patterns:
+            for ratio in ratios_for_view:
+                r_str = str(ratio).replace(".", "p")
+                settings.append(
+                    OcclusionSetting(
+                        name=f"{view_mode}_{pattern}_r{r_str}",
+                        view_mode=view_mode,
+                        pattern=pattern,
+                        ratio=ratio,
+                        corruption="noise_masking",
+                        temporal_span=10 if pattern == "temporal" else None,
+                    )
                 )
-            )
-            settings.append(
-                OcclusionSetting(
-                    name=f"random_right_{pct}",
-                    view_mode="right",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                )
-            )
-            settings.append(
-                OcclusionSetting(
-                    name=f"random_both_{pct}",
-                    view_mode="both",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                )
-            )
-        return settings
-
-    if study_mode != "full":
-        raise ValueError(f"Unsupported study_mode: {study_mode}")
-
-    ratios = [0.10, 0.20, 0.30, 0.40, 0.50]
-    for ratio in ratios:
-        pct = int(round(ratio * 100))
-        settings.extend(
-            [
-                OcclusionSetting(
-                    name=f"random_left_{pct}",
-                    view_mode="left",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"random_right_{pct}",
-                    view_mode="right",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"random_both_{pct}",
-                    view_mode="both",
-                    pattern="random",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"distal_left_{pct}",
-                    view_mode="left",
-                    pattern="distal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"distal_right_{pct}",
-                    view_mode="right",
-                    pattern="distal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"distal_both_{pct}",
-                    view_mode="both",
-                    pattern="distal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                ),
-                OcclusionSetting(
-                    name=f"temporal_left_{pct}",
-                    view_mode="left",
-                    pattern="temporal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                    temporal_span=10,
-                ),
-                OcclusionSetting(
-                    name=f"temporal_right_{pct}",
-                    view_mode="right",
-                    pattern="temporal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                    temporal_span=10,
-                ),
-                OcclusionSetting(
-                    name=f"temporal_both_{pct}",
-                    view_mode="both",
-                    pattern="temporal",
-                    ratio=ratio,
-                    corruption="noise_masking",
-                    temporal_span=10,
-                ),
-            ]
-        )
     return settings
 
 
@@ -482,9 +403,6 @@ def _build_model(config: DictConfig):
 
 
 def _build_trainer(config: DictConfig, save_dir: Path) -> Trainer:
-    save_dir.mkdir(parents=True, exist_ok=True)
-    tb_logger = TensorBoardLogger(save_dir=str(save_dir / "tb_logs"), name="test")
-    csv_logger = CSVLogger(save_dir=str(save_dir / "csv_logs"), name="test")
     progress_bar = RichProgressBar(refresh_rate=10, leave=True)
 
     use_gpu = torch.cuda.is_available()
@@ -492,10 +410,124 @@ def _build_trainer(config: DictConfig, save_dir: Path) -> Trainer:
         devices=[int(config.train.gpu)] if use_gpu else 1,
         accelerator="gpu" if use_gpu else "cpu",
         max_epochs=int(config.train.max_epochs),
-        logger=[tb_logger, csv_logger],
         callbacks=[progress_bar],
     )
     return trainer
+
+
+def _format_float(value: float) -> str:
+    return "nan" if math.isnan(value) else f"{value:.4f}"
+
+
+# alpha visualization utilities
+def _collect_alpha_tensor(
+    test_outputs: list[Dict[str, torch.Tensor]],
+) -> torch.Tensor | None:
+    alpha_chunks: list[torch.Tensor] = []
+    for batch_output in test_outputs:
+        alpha = batch_output.get("alpha")
+        if isinstance(alpha, torch.Tensor) and alpha.numel() > 0:
+            alpha_chunks.append(alpha.detach().cpu())
+    if not alpha_chunks:
+        return None
+    return torch.cat(alpha_chunks, dim=0)
+
+
+def _alpha_joint_names() -> list[str]:
+    map_module = importlib.import_module("map_config")
+    common_mapping = getattr(map_module, "UNITY_MALE_MAPPING", None)
+    if isinstance(common_mapping, dict) and common_mapping:
+        return [common_mapping[idx] for idx in sorted(common_mapping)]
+    return []
+
+
+def _export_alpha_visualization(
+    test_outputs: list[Dict[str, torch.Tensor]],
+    save_dir: Path,
+    setting_name: str,
+) -> None:
+    alpha = _collect_alpha_tensor(test_outputs)
+    if alpha is None or alpha.ndim != 4:
+        return
+
+    alpha_mean_joint = alpha.mean(dim=(0, 1, 3)).numpy()
+    alpha_std_joint = alpha.std(dim=(0, 1, 3)).numpy()
+    alpha_mean_time_joint = alpha.mean(dim=0).squeeze(-1).numpy()
+    alpha_right_mean_joint = 1.0 - alpha_mean_joint
+
+    joint_names = _alpha_joint_names()
+    if len(joint_names) != alpha_mean_joint.shape[0]:
+        joint_names = [f"joint_{idx:02d}" for idx in range(alpha_mean_joint.shape[0])]
+
+    vis_dir = save_dir / "alpha_vis"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_path = vis_dir / f"alpha_summary_{setting_name}.csv"
+    with open(csv_path, "w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(
+            fp,
+            fieldnames=[
+                "joint_index",
+                "joint_name",
+                "alpha_mean",
+                "alpha_std",
+                "right_mean",
+            ],
+        )
+        writer.writeheader()
+        for idx, joint_name in enumerate(joint_names):
+            writer.writerow(
+                {
+                    "joint_index": idx,
+                    "joint_name": joint_name,
+                    "alpha_mean": float(alpha_mean_joint[idx]),
+                    "alpha_std": float(alpha_std_joint[idx]),
+                    "right_mean": float(alpha_right_mean_joint[idx]),
+                }
+            )
+
+    x = np.arange(len(joint_names))
+    fig, ax = plt.subplots(figsize=(max(10, len(joint_names) * 0.75), 4.8))
+    ax.bar(
+        x,
+        alpha_mean_joint,
+        yerr=alpha_std_joint,
+        color="tab:green",
+        alpha=0.9,
+        capsize=3,
+    )
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("alpha (left-view weight)")
+    ax.set_title(f"Per-joint fusion ratio: {setting_name}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(joint_names, rotation=35, ha="right")
+    ax.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout()
+    bar_path = vis_dir / f"alpha_joint_bar_{setting_name}.png"
+    fig.savefig(bar_path, dpi=180)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(max(10, len(joint_names) * 0.75), 6.0))
+    im = ax.imshow(
+        alpha_mean_time_joint, aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis"
+    )
+    ax.set_title(f"Alpha heatmap over time and joints: {setting_name}")
+    ax.set_xlabel("joint")
+    ax.set_ylabel("time")
+    ax.set_xticks(np.arange(len(joint_names)))
+    ax.set_xticklabels(joint_names, rotation=35, ha="right")
+    y_tick_count = min(alpha_mean_time_joint.shape[0], 8)
+    y_ticks = np.linspace(
+        0, alpha_mean_time_joint.shape[0] - 1, num=y_tick_count, dtype=int
+    )
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels([str(int(v)) for v in y_ticks])
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("alpha")
+    fig.tight_layout()
+    heatmap_path = vis_dir / f"alpha_time_joint_heatmap_{setting_name}.png"
+    fig.savefig(heatmap_path, dpi=180)
+    plt.close(fig)
 
 
 @hydra.main(
@@ -510,18 +542,20 @@ def init_params(config: DictConfig | None = None) -> None:
     seed_everything(42, workers=True)
     config.train.gpu = int(getattr(config.train, "gpu", 0))
 
-    ckpt_path = os.environ.get("EVAL_CKPT_PATH", DEFAULT_CKPT_PATH)
-    study_mode = os.environ.get("MASKING_STUDY", "full").strip().lower()
+    ckpt_path = DEFAULT_CKPT_PATH
     failure_threshold = float(os.environ.get("FAILURE_THRESHOLD", "0.15"))
 
-    root_log_path = Path(str(config.log_path))
-    results_root = root_log_path / "occlusion_eval"
+    results_root = "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_unity_masking"
+    results_root = Path(results_root)
     results_root.mkdir(parents=True, exist_ok=True)
 
-    settings = _build_default_study(study_mode=study_mode)
+    settings = _build_default_study()
     summary_rows: List[Dict[str, Any]] = []
 
-    logger.info("Running occlusion robustness study=%s with %d settings", study_mode, len(settings))
+    logger.info(
+        "Running occlusion study with %d settings",
+        len(settings),
+    )
     logger.info("Checkpoint: %s", ckpt_path)
 
     for setting in settings:
@@ -536,11 +570,24 @@ def init_params(config: DictConfig | None = None) -> None:
         masked_dm = MaskedUnityDataModule(base_dm=base_dm, setting=setting)
         trainer = _build_trainer(run_cfg, save_dir=Path(run_cfg.log_path))
 
-        trainer.test(model, datamodule=masked_dm, ckpt_path=ckpt_path)
+        trainer.test(
+            model, datamodule=masked_dm, ckpt_path=ckpt_path, weights_only=False
+        )
 
         test_outputs = list(getattr(model, "test_outputs", []))
         flat = _flatten_test_outputs(test_outputs)
         metrics = _summarize_outputs(flat=flat, failure_threshold=failure_threshold)
+        alpha_tensor = _collect_alpha_tensor(test_outputs)
+        alpha_global_mean = (
+            float(alpha_tensor.mean().item())
+            if isinstance(alpha_tensor, torch.Tensor)
+            else float("nan")
+        )
+        alpha_global_std = (
+            float(alpha_tensor.std().item())
+            if isinstance(alpha_tensor, torch.Tensor)
+            else float("nan")
+        )
 
         run_tag = Path(ckpt_path).stem if ckpt_path else "run"
         out_json = Path(run_cfg.log_path) / f"occlusion_metrics_{run_tag}.json"
@@ -558,10 +605,12 @@ def init_params(config: DictConfig | None = None) -> None:
 
         fused_mpjpe = metrics.get("fused", {}).get("mpjpe", math.nan)
         canonical_avg_mpjpe = metrics.get("canonical_avg", {}).get("mpjpe", math.nan)
+        raw_avg_mpjpe = metrics.get("raw_avg", {}).get("mpjpe", math.nan)
         fused_acc = metrics.get("fused", {}).get("acceleration_error", math.nan)
         canonical_avg_acc = metrics.get("canonical_avg", {}).get(
             "acceleration_error", math.nan
         )
+        raw_avg_acc = metrics.get("raw_avg", {}).get("acceleration_error", math.nan)
 
         summary_rows.append(
             {
@@ -571,20 +620,63 @@ def init_params(config: DictConfig | None = None) -> None:
                 "ratio": setting.ratio,
                 "corruption": setting.corruption,
                 "temporal_span": setting.temporal_span,
+                "alpha_global_mean": alpha_global_mean,
+                "alpha_global_std": alpha_global_std,
                 "fused_mpjpe": fused_mpjpe,
                 "canonical_avg_mpjpe": canonical_avg_mpjpe,
+                "raw_avg_mpjpe": raw_avg_mpjpe,
                 "delta_mpjpe_full_minus_avg": fused_mpjpe - canonical_avg_mpjpe,
+                "delta_mpjpe_full_minus_raw_avg": fused_mpjpe - raw_avg_mpjpe,
                 "fused_acceleration_error": fused_acc,
                 "canonical_avg_acceleration_error": canonical_avg_acc,
+                "raw_avg_acceleration_error": raw_avg_acc,
                 "delta_acc_full_minus_avg": fused_acc - canonical_avg_acc,
+                "delta_acc_full_minus_raw_avg": fused_acc - raw_avg_acc,
             }
         )
+
+        report_path = (
+            Path(run_cfg.log_path) / f"comparison_report_{setting.name}_{run_tag}.txt"
+        )
+        with open(report_path, "w", encoding="utf-8") as fp:
+            fp.write(f"Setting: {setting.name}\n")
+            fp.write(f"Mask view mode: {setting.view_mode}\n")
+            fp.write(f"Mask pattern: {setting.pattern}\n")
+            fp.write(f"Mask ratio: {setting.ratio:.2f}\n")
+            fp.write(f"alpha_global_mean: {_format_float(alpha_global_mean)}\n")
+            fp.write(f"alpha_global_std: {_format_float(alpha_global_std)}\n")
+            fp.write("\n[Primary]\n")
+            fp.write(f"fused_mpjpe: {_format_float(fused_mpjpe)}\n")
+            fp.write(f"fused_accel_err: {_format_float(fused_acc)}\n")
+            fp.write("\n[Baselines]\n")
+            fp.write(f"canonical_avg_mpjpe: {_format_float(canonical_avg_mpjpe)}\n")
+            fp.write(f"raw_avg_mpjpe: {_format_float(raw_avg_mpjpe)}\n")
+            fp.write(
+                f"delta_mpjpe_full_minus_canonical_avg: {_format_float(fused_mpjpe - canonical_avg_mpjpe)}\n"
+            )
+            fp.write(
+                f"delta_mpjpe_full_minus_raw_avg: {_format_float(fused_mpjpe - raw_avg_mpjpe)}\n"
+            )
+            fp.write(f"canonical_avg_accel_err: {_format_float(canonical_avg_acc)}\n")
+            fp.write(f"raw_avg_accel_err: {_format_float(raw_avg_acc)}\n")
+            fp.write(
+                f"delta_accel_full_minus_canonical_avg: {_format_float(fused_acc - canonical_avg_acc)}\n"
+            )
+            fp.write(
+                f"delta_accel_full_minus_raw_avg: {_format_float(fused_acc - raw_avg_acc)}\n"
+            )
 
         logger.info(
             "Completed %s: fused_mpjpe=%.4f, canonical_avg_mpjpe=%.4f",
             setting.name,
             fused_mpjpe,
             canonical_avg_mpjpe,
+        )
+
+        _export_alpha_visualization(
+            test_outputs=test_outputs,
+            save_dir=Path(run_cfg.log_path),
+            setting_name=setting.name,
         )
 
     run_tag = Path(ckpt_path).stem if ckpt_path else "run"
@@ -596,12 +688,18 @@ def init_params(config: DictConfig | None = None) -> None:
         "ratio",
         "corruption",
         "temporal_span",
+        "alpha_global_mean",
+        "alpha_global_std",
         "fused_mpjpe",
         "canonical_avg_mpjpe",
+        "raw_avg_mpjpe",
         "delta_mpjpe_full_minus_avg",
+        "delta_mpjpe_full_minus_raw_avg",
         "fused_acceleration_error",
         "canonical_avg_acceleration_error",
+        "raw_avg_acceleration_error",
         "delta_acc_full_minus_avg",
+        "delta_acc_full_minus_raw_avg",
     ]
     with open(summary_csv, "w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)

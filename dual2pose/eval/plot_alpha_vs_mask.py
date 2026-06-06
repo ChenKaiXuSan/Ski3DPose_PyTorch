@@ -30,7 +30,7 @@ BASE_SKI = Path(
 BASE_UNI = Path(
     "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_unity_masking"
 )
-OUT_DIR = Path("/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/scripts/alpha_vs_mask_plots")
+OUT_DIR = Path("/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/alpha_vs_mask_plots")
 OUT_DIR.mkdir(exist_ok=True)
 
 # ── constants ────────────────────────────────────────────────────────────────
