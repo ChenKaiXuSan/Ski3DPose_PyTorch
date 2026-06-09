@@ -601,7 +601,7 @@ def main() -> None:
     ratio_list = (
         args.mask_ratio_sweep
         if args.mask_ratio_sweep
-        else ([args.mask_ratio] if args.mask_ratio > 0 else [0.1, 0.2, 0.3, 0.4, 0.5])
+        else [i for i in np.arange(0.0, 1.05, 0.05)]
     )
     view_mode_list = (
         args.mask_view_modes

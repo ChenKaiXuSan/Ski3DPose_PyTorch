@@ -371,16 +371,14 @@ def _build_default_study() -> List[OcclusionSetting]:
     settings: List[OcclusionSetting] = []
 
     # Full sweep: 4 view_modes (none/left/right/both) x 3 patterns x ratio 0-1 step 0.05
-    ratios = [
-        i for i in np.arange(0.0, 1.05, 0.05)
-    ]  # ~21 points: 0.0 -- 1.0
+    ratios = [step / 20 for step in range(21)]  # 21 points: 0.0 -- 1.0
     view_modes = ["none", "left", "right", "both"]
     patterns = ["random", "distal", "temporal"]
     for view_mode in view_modes:
         ratios_for_view = [0.0] if view_mode == "none" else ratios
         for pattern in patterns:
             for ratio in ratios_for_view:
-                r_str = str(ratio).replace(".", "p")
+                r_str = f"{ratio:.2f}".replace(".", "p")
                 settings.append(
                     OcclusionSetting(
                         name=f"{view_mode}_{pattern}_r{r_str}",
