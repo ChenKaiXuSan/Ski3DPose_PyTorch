@@ -129,3 +129,4 @@ MNIST
 
 logs/
 ckpt/
+.claude/worktrees/

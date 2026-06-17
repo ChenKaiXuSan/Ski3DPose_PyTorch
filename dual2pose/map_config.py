@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 """
-File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/map_config.py
-Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project
+File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/dual2pose/map_config.py
+Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/dual2pose
 Created Date: Monday March 9th 2026
 Author: Kaixu Chen
 -----

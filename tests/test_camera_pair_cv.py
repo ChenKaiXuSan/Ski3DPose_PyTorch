@@ -10,7 +10,7 @@ from pathlib import Path
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.cross_validation_camera_pairs import CameraPairCrossValidation
+from cross_validation.cross_validation_camera_pairs import CameraPairCrossValidation
 
 
 def test_basic_functionality():
@@ -156,8 +156,8 @@ def test_sample_access():
         print(f"  {key}: {value}")
     
     # 从字典恢复
-    from scripts.cross_validation_camera_pairs import CameraPairSample
-    recovered_sample = CameraPairSample.from_dict(sample_dict)
+    from dual2pose.map_config import UnityDataConfig
+    recovered_sample = UnityDataConfig.from_dict(sample_dict)
     assert recovered_sample.person_id == sample.person_id
     assert recovered_sample.action_id == sample.action_id
     

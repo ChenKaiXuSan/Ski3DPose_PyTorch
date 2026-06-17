@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 """
-File: /workspace/code/project/utils/save_CAM.py
-Project: /workspace/code/project/utils
+File: /workspace/code/dual2pose/utils/save_CAM.py
+Project: /workspace/code/dual2pose/utils
 Created Date: Monday November 10th 2025
 Author: Kaixu Chen
 -----

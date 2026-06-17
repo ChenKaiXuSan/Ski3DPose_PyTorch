@@ -138,17 +138,51 @@ pip install -r requirements.txt
 
 ### 2. Train (example)
 
-A) Unity pretrain
+Unity training:
 
-python src/train/train_unity_pretrain.py
+```bash
+python dual2pose/train_unity.py
+```
 
-B) Mixed semi-supervised training
-python src/train/train_mixed_semisup.py
+Ski-PosePTZ training:
+
+```bash
+python dual2pose/train_ski_poseptz.py
+```
 
 ### 3. Inference (example)
 
+Real-world direct evaluation / inference:
+
+```bash
+python eval_realworld_direct.py
 ```
-python src/infer.py --left path/to/left.mp4 --right path/to/right.mp4
+
+## Project Structure
+
+```text
+Skiing_Canonical_DualView_3D_Pose_PyTorch/
+├── dual2pose/                 # Core dual-view 3D pose fusion package
+│   ├── dataloader/            # Unity and Ski-PosePTZ dataset loaders
+│   ├── eval/                  # Evaluation helpers
+│   ├── models/                # Dual2Pose, cross-view fusion, ST-GCN, Sim3 modules
+│   ├── trainer/               # PyTorch Lightning trainers
+│   └── utils/                 # Utility functions
+├── configs/                   # Hydra configs for training and model variants
+│   └── model/                 # Model-specific config fragments
+├── cross_validation/          # Camera-pair and Ski-PosePTZ split generation
+├── pegasus/                   # PBS/Pegasus cluster job scripts
+├── SAM3/                      # External SAM3-related utilities
+├── SAM3Dbody/                 # External SAM 3D Body utilities
+├── unity/                     # Unity dataset analysis / helper files
+├── analysis/                  # Analysis notebooks and reports
+├── tests/                     # Lightweight repository tests
+├── logs/                      # Training/evaluation outputs (ignored by git)
+├── ckpt/                      # Local checkpoints (ignored by git)
+├── eval_realworld_direct.py   # Real-world direct evaluation entry point
+├── eval_realworld_inference.py# Real-world inference entry point
+├── requirements.txt           # Python dependencies
+└── environment.yaml           # Conda environment definition
 ```
 
 ## Citation

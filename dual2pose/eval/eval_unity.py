@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 """
-File: /workspace/code/project/main.py
-Project: /workspace/code/project
+File: /workspace/code/dual2pose/main.py
+Project: /workspace/code/dual2pose
 Created Date: Tuesday April 22nd 2025
 Author: Kaixu Chen
 -----

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 """
-File: /workspace/skeleton/project/helper.py
-Project: /workspace/skeleton/project
+File: /workspace/skeleton/dual2pose/helper.py
+Project: /workspace/skeleton/dual2pose
 Created Date: Tuesday May 14th 2024
 Author: Kaixu Chen
 -----

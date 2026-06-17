@@ -8,7 +8,7 @@
 #PBS -e logs/pegasus/dual2pose/train_${PBS_SUBREQNO}_err.log
 
 # === 1. 環境準備 ===
-PROJECT_ROOT="/work/SKIING/chenkaixu/code/Ski3DPose_PyTorch"
+PROJECT_ROOT="/work/SKIING/chenkaixu/code/Skiing_Canonical_DualView_3D_Pose_PyTorch"
 cd "${PROJECT_ROOT}" || exit 1
 
 mkdir -p logs/pegasus/dual2pose
@@ -33,25 +33,24 @@ BATCH_SIZE=4
 # - PBS array mode: use PBS_ARRAY_INDEX
 # - non-array/manual mode: allow env FOLD_ID override, default 0
 FOLD_ID=${PBS_SUBREQNO:-${FOLD_ID:-0}}
+printf -v FOLD_FILE "fold_%02d.json" "${FOLD_ID}"
 
 echo "🏁 Train job started at: $(date)"
 echo "Project Root: ${PROJECT_ROOT}"
 echo "Data Root: ${DATA_ROOT}"
-echo "Index Mapping: ${INDEX_MAPPING_PATH}"
+echo "Index Mapping: ${INDEX_MAPPING_PATH}/${FOLD_FILE}"
 echo "GPU: 0, Epochs: ${MAX_EPOCHS}, Workers: ${NUM_WORKERS}"
 echo "Backbone: ${MODEL_BACKBONE}"
 echo "Fold: ${FOLD_ID}"
 
 # === 3. 执行训练（每个作业只跑一个 fold） ===
-python -m project.main \
+python dual2pose/train_unity.py \
     data.unity.root_path=${DATA_ROOT} \
-    data.index_mapping=${INDEX_MAPPING_DIR} \
-    data.index_mapping_path=${INDEX_MAPPING_PATH} \
+    data.unity.index_mapping_path=${INDEX_MAPPING_PATH}/${FOLD_FILE} \
     train.gpu=0 \
     data.num_workers=${NUM_WORKERS} \
     data.batch_size=${BATCH_SIZE} \
     model.backbone=${MODEL_BACKBONE} \
-    train.fold=${FOLD_ID} \
-    train.view="dual"
+    train.fold=${FOLD_ID}
 
 echo "🏁 Train job finished at: $(date)"

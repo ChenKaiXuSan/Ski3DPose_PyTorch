@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 """
-File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader/canonicalize.py
-Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/project/dataloader
+File: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/dual2pose/dataloader/canonicalize.py
+Project: /workspace/Skiing_Canonical_DualView_3D_Pose_PyTorch/dual2pose/dataloader
 Created Date: Sunday May 10th 2026
 Author: Kaixu Chen
 -----

@@ -11,7 +11,7 @@ loss:
   weight_decay: 0.01
 
 cross_validation:
-  # 生成 index mapping 的配置（用于 cross_validation/generate_cv_index.py）
+  # 生成 index mapping 的配置（用于 cross_validation/main.py）
   num_persons: 2
   num_actions: 12
   num_cameras: 108
@@ -72,4 +72,4 @@ train:
 log_path: logs/train_unity/${model.backbone}/${now:%Y-%m-%d}/${now:%H-%M-%S} # the log path, used for log and checkpoint
 
 
-# python -m project.main model.backbone=stgcn data.load_frames=false
+# python dual2pose/train_unity.py model.backbone=crossview_fusion data.load_frames=false
