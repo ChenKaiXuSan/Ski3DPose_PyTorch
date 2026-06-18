@@ -2,10 +2,11 @@
 
 # CanonFuse3D
 
-**Geometry-Free (No Camera Head), Canonical-Aligned Dual-View 3D Pose Fusion for Skiing Videos**
+**Calibration-Free, Canonical-Aligned Dual-View 3D Pose Fusion for Skiing Videos**
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](#)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange.svg)](#)
+[![PyTorch Lightning](https://img.shields.io/badge/Lightning-2.x-purple.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 
 </div>
@@ -14,121 +15,172 @@
 
 ## TL;DR
 
-This repo provides a **two-stage** framework to reconstruct **stable and complete 3D human keypoints** from **synchronized left/right skiing videos** **without camera calibration** and **without a camera head**.
+This repository implements a research pipeline for reconstructing stable 3D human poses from synchronized dual-view skiing videos. The current default model is `crossview_fusion`: it takes per-view 3D keypoints from SAM 3D Body, aligns them in a human-centric canonical coordinate system, exchanges information across views with attention, and fuses joints with an adaptive reliability gate.
 
-**Key idea:**
+The main goal is to avoid explicit camera calibration while still using complementary information from two views.
 
-1. Convert per-view 3D poses into a **human-centric canonical coordinate system** (pelvis-centered, scale-normalized, orientation-normalized).
-2. Perform **frame-wise dual-view fusion** via **joint-wise gating + spatial GCN refinement**.
-3. Apply **temporal refinement** with **ST-GCN** to reduce jitter and enforce motion consistency.
-4. Train with **strong supervision on Unity** and **uncertainty-aware weak constraints on real videos**.
+```text
+dual-view videos
+    -> SAM 3D Body per-view 3D keypoints
+    -> human-centric canonicalization
+    -> Sim3 cross-view pose alignment
+    -> cross-view attention + temporal refinement
+    -> joint-wise gated fusion + residual correction
+    -> stable fused 3D pose sequence
+```
 
 ---
 
 ## Motivation
 
-Real-world skiing videos often suffer from:
+Skiing videos are difficult for standard 3D pose estimation because they often contain:
 
-- unknown / unreliable camera extrinsics,
-- fast motion, motion blur, self-occlusion,
-- view-dependent pose noise.
+- unknown or unreliable camera extrinsics,
+- fast motion and motion blur,
+- frequent self-occlusion,
+- strong view-dependent errors from monocular 3D estimators.
 
-Instead of estimating camera poses, we aim to **fuse multi-view 3D keypoints directly** using **canonical alignment** and **learning-based fusion**, which is more robust under uncalibrated settings.
+Instead of recovering camera poses, this project fuses the two monocular 3D predictions directly after transforming them into a comparable human-centric canonical space.
 
 ---
 
 ## Method Overview
 
-### Stage 0: Per-view 3D lifting (external)
+### 1. Per-view 3D lifting
 
-We use an off-the-shelf estimator (e.g., **SAM 3D Body**) to obtain initial 3D keypoints:
+The project uses external SAM 3D Body utilities to estimate 3D keypoints independently for each camera:
 
-- `X_L^0`, `X_R^0`
+- `P_L`: left-camera 3D pose sequence
+- `P_R`: right-camera 3D pose sequence
 
-### Stage 1: Canonical Alignment (human-centric)
+The SAM 3D Body utilities live in `SAM3Dbody/`, and the training/evaluation dataloaders consume the exported `.npy` or `.npz` keypoint results.
 
-For each frame, we normalize poses into a canonical human coordinate system:
+### 2. Human-centric canonical alignment
 
-1. pelvis-centered translation
-2. scale normalization
-3. orientation normalization (anatomical axes)
+Implemented in `dual2pose/trainer/canonicalize.py`.
 
-Output:
+Each pose is transformed into a canonical coordinate system using anatomical landmarks:
 
-- `X̃_L`, `X̃_R` (comparable across views)
+- pelvis origin: midpoint of left and right hips,
+- body x-axis: right hip minus left hip,
+- body y-axis: neck minus pelvis,
+- body z-axis: cross product of body x/y axes,
+- optional face-direction sign correction.
 
-### Stage 2a: Frame-wise Dual-view Fusion (Gate + Spatial GCN)
+This makes left/right predictions more comparable without using camera extrinsics.
 
-Input: `X̃_L`, `X̃_R`  
-Output: per-frame fused pose `X_mv`
+### 3. Cross-view canonical fusion
 
-- **Joint-wise gate** selects the more reliable view for each joint.
-- **Spatial GCN** refines the fused pose using skeletal topology.
+Implemented in `dual2pose/models/crossview_fusion.py`.
 
-### Stage 2b: Temporal Refinement (ST-GCN)
+The default model, `CrossViewCanonicalFusion`, contains:
 
-Input: `{X_mv(t)}_{t=1..T}`  
-Output: final stable pose sequence `X_fused`
+- **Sim3 alignment**: sequence-level similarity alignment between left and right canonical poses.
+- **Motion features**: per-joint velocity features from each view.
+- **Cross-view residual features**: discrepancy after aligning one view to the other.
+- **Rotation features**: rotation vectors from the estimated Sim3 transforms.
+- **Joint encoder**: MLP-based per-joint feature encoding.
+- **Cross-view attention**: left-to-right and right-to-left multi-head attention over joints.
+- **Temporal refiner**: lightweight depthwise temporal convolution for sequence smoothing.
+- **Joint-wise gate**: predicts `alpha` for each joint and frame to combine the two views.
+- **Residual head**: predicts a final 3D correction to the fused pose.
+
+Fusion is performed as:
+
+```text
+base_l = 0.5 * (left_canon + right_to_left_canon)
+base_r = 0.5 * (right_canon + left_to_right_canon)
+fused = alpha * base_l + (1 - alpha) * base_r + residual
+```
+
+### 4. Alternative Dual2Pose branch
+
+The repository also contains `dual2pose/models/dual2pose_net.py`, an alternative uncertainty-aware fusion model with:
+
+- velocity-based confidence proxy,
+- joint-wise view gating,
+- rich per-joint motion/bone/discrepancy features,
+- temporal SSM-style residual refinement,
+- optional DINO image features.
+
+This branch is selectable with `model.backbone=dual2pose`, while the default config uses `model.backbone=crossview_fusion`.
 
 ---
 
 ## Data
 
-### Labeled (Unity)
+### Unity synthetic skiing data
 
-- synchronized dual-view videos
-- **2D GT keypoints**
-- **3D GT keypoints**
+Used for supervised training and evaluation.
 
-### Unlabeled (Real skiing)
+Typical modalities:
 
-- synchronized dual-view videos
-- 2D keypoints from pose estimator (**may be noisy**)
-- no 3D GT, no reliable extrinsics
+- synchronized dual-view RGB frames,
+- Unity 2D ground-truth keypoints,
+- Unity 3D ground-truth keypoints,
+- SAM 3D Body per-view 2D/3D predictions,
+- camera-pair split metadata.
+
+Loader:
+
+- `dual2pose/dataloader/unity_dataset_dual_view.py`
+
+### Ski-PosePTZ / real skiing data
+
+Used for pseudo-GT training, real-world inference, and qualitative evaluation.
+
+Typical modalities:
+
+- synchronized dual-view frames,
+- SAM 3D Body predictions,
+- pseudo-GT 3D pose exports when available,
+- split/index mapping JSON files.
+
+Loader:
+
+- `dual2pose/dataloader/ski_poseptz_dataset_dual_view.py`
+
+### Cross-validation
+
+Camera-pair folds are generated by:
+
+```bash
+python cross_validation/main.py
+```
+
+The code supports split strategies such as `by_action`, `by_person`, and camera-pair based folds depending on the index-generation script/configuration.
 
 ---
 
-## Training: Mixed Supervision (Unity + Real)
+## Training Objective
 
-### Unity (strong supervision)
+The default `CrossViewFusionTrainer` is implemented in:
 
-**Step1 (frame-wise):**
+- `dual2pose/trainer/train_crossview_fusion.py`
 
-- `L_3D` (3D regression)
-- `L_2D` (2D reprojection using Unity cameras)
-- `L_bone` (bone length constraint)
+For labeled Unity or pseudo-GT training, the main supervised term is L1 error in canonical space. The trainer also adds auxiliary constraints:
 
-**Step2 (temporal):**
+- **view reconstruction loss**: reconstruct left/right canonical poses from the fused pose and gate,
+- **alpha balance loss**: discourages collapse to only one view,
+- **alpha entropy loss**: encourages non-degenerate reliability weights,
+- **temporal smoothness loss**: penalizes second-order acceleration of the fused sequence.
 
-- `L_3D^seq` (sequence 3D regression)
-- `L_v`, `L_a` (velocity / acceleration consistency)
-- `L_bone-var` (bone length stability over time)
+During testing, the trainer reports:
 
-### Real (weak / uncertainty-aware constraints)
+- fused MPJPE,
+- SAM3D left/right MPJPE,
+- canonical baseline MPJPE,
+- simple average baseline MPJPE,
+- acceleration error,
+- per-joint MPJPE.
 
-**Step1 (frame-wise):**
-
-- `L_mv` (multi-view consistency w.r.t. inputs, confidence-weighted)
-- `L_bone-prior` (bone priors)
-
-**Step2 (temporal):**
-
-- `L_smooth` (temporal smoothness, avoid over-smoothing fast skiing motions)
-- `L_bone-seq` (sequence bone consistency)
-- `L_EMA` (teacher-student consistency)
-- optional `L_2D-weak` (very low weight, treated as noisy observation)
-
-**Total:**
-\[
-L = L*{Unity} + \lambda(t) L*{Real}, \quad \lambda(t)\ \text{ramp-up}
-\]
+---
 
 ## Quick Start
 
-> NOTE: This repo currently provides a research codebase template.  
-> You need to prepare your dataset folders and configuration.
+> This is a research codebase. Dataset paths in `configs/dual2pose.yaml` should be edited for your local machine before training.
 
-### 1 Install
+### 1. Install
 
 ```bash
 conda create -n canonfuse3d python=3.10 -y
@@ -136,63 +188,96 @@ conda activate canonfuse3d
 pip install -r requirements.txt
 ```
 
-### 2. Train (example)
+### 2. Train on Unity
 
-Unity training:
+Default training uses `crossview_fusion`:
 
 ```bash
 python dual2pose/train_unity.py
 ```
 
-Ski-PosePTZ training:
+Useful overrides:
 
 ```bash
-python dual2pose/train_ski_poseptz.py
+python dual2pose/train_unity.py model.backbone=crossview_fusion data.load_frames=false
+python dual2pose/train_unity.py model.backbone=dual2pose
 ```
 
-### 3. Inference (example)
-
-Real-world direct evaluation / inference:
+### 3. Train on Ski-PosePTZ pseudo GT
 
 ```bash
-python eval_realworld_direct.py
+python dual2pose/train_ski_poseptz.py \
+  --batch-size 4 \
+  --num-workers 4 \
+  --time-window 30 \
+  --max-epochs 100
 ```
 
-## Project Structure
+### 4. Real-world direct inference
+
+```bash
+python eval_realworld_direct.py --help
+```
+
+The script loads real-world SAM3D-body outputs, builds left/right temporal windows, runs the trained `crossview_fusion` model, and exports summary/visualization files.
+
+---
+
+## Repository Structure
 
 ```text
 Skiing_Canonical_DualView_3D_Pose_PyTorch/
-├── dual2pose/                 # Core dual-view 3D pose fusion package
-│   ├── dataloader/            # Unity and Ski-PosePTZ dataset loaders
-│   ├── eval/                  # Evaluation helpers
-│   ├── models/                # Dual2Pose, cross-view fusion, ST-GCN, Sim3 modules
-│   ├── trainer/               # PyTorch Lightning trainers
-│   └── utils/                 # Utility functions
-├── configs/                   # Hydra configs for training and model variants
-│   └── model/                 # Model-specific config fragments
-├── cross_validation/          # Camera-pair and Ski-PosePTZ split generation
-├── pegasus/                   # PBS/Pegasus cluster job scripts
-├── SAM3/                      # External SAM3-related utilities
-├── SAM3Dbody/                 # External SAM 3D Body utilities
-├── unity/                     # Unity dataset analysis / helper files
-├── analysis/                  # Analysis notebooks and reports
-├── tests/                     # Lightweight repository tests
-├── logs/                      # Training/evaluation outputs (ignored by git)
-├── ckpt/                      # Local checkpoints (ignored by git)
-├── eval_realworld_direct.py   # Real-world direct evaluation entry point
-├── eval_realworld_inference.py# Real-world inference entry point
-├── requirements.txt           # Python dependencies
-└── environment.yaml           # Conda environment definition
+├── dual2pose/
+│   ├── dataloader/              # Unity and Ski-PosePTZ dataset loaders
+│   ├── eval/                    # Evaluation and visualization scripts
+│   ├── models/                  # Cross-view fusion, Dual2Pose, Sim3, ST-GCN modules
+│   ├── trainer/                 # PyTorch Lightning trainers and canonicalization
+│   └── utils/                   # Utility functions
+├── configs/                     # Hydra configuration files
+│   └── model/                   # Model-specific config fragments
+├── cross_validation/            # Camera-pair split generation
+├── SAM3/                        # SAM3 helper utilities
+├── SAM3Dbody/                   # SAM 3D Body helper utilities
+├── analysis/                    # Data checks, notebooks, export scripts
+├── pegasus/                     # Cluster job scripts
+├── unity/                       # Unity project/assets and analysis helpers
+├── tests/                       # Lightweight tests
+├── eval_realworld_direct.py     # Direct real-world inference/evaluation
+├── eval_realworld_inference.py  # Real-world inference entry point
+├── requirements.txt
+└── environment.yaml
 ```
+
+---
+
+## Paper Writing Guide
+
+A paper based on this codebase can be structured around the following method pipeline:
+
+1. **Problem formulation**: calibration-free dual-view 3D pose fusion for skiing.
+2. **Per-view lifting**: use SAM 3D Body to obtain noisy monocular 3D pose sequences.
+3. **Canonical alignment**: transform poses into a pelvis-centered anatomical coordinate system.
+4. **Cross-view alignment**: estimate Sim3 transforms between canonical left/right predictions.
+5. **Feature construction**: concatenate pose, aligned pose, residual, velocity, and rotation features.
+6. **Cross-view reasoning**: exchange joint-level information via bidirectional attention.
+7. **Temporal refinement**: smooth and refine features over time with temporal convolution.
+8. **Adaptive fusion**: predict per-joint reliability gates and residual 3D corrections.
+9. **Evaluation**: compare against single-view SAM3D, simple average fusion, canonical average fusion, and the proposed learned fusion.
+
+The central claim is:
+
+> A human-centric canonical representation enables calibration-free dual-view 3D pose fusion, and joint-wise learned fusion improves robustness under skiing-specific motion, occlusion, and view-dependent pose noise.
+
+---
 
 ## Citation
 
-If you find this useful, please cite our work (coming soon):
+If you find this useful, please cite our work:
 
-```
+```bibtex
 @article{chen2026canonfuse3d,
-title = {Canonical-Aligned Dual-View 3D Pose Fusion without Camera Calibration for Skiing Videos},
-author = {Chen, Kaixu and ...},
-year = {2026}
+  title = {Canonical-Aligned Dual-View 3D Pose Fusion without Camera Calibration for Skiing Videos},
+  author = {Chen, Kaixu and ...},
+  year = {2026}
 }
 ```
