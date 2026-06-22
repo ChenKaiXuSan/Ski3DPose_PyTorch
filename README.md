@@ -2,7 +2,7 @@
 
 # CanonFuse3D
 
-**Calibration-Free, Canonical-Aligned Dual-View 3D Pose Fusion for Skiing Videos**
+**CanonFuse3D: Human-Centric Canonical Fusion for Calibration-Free Dual-View 3D Pose Estimation in Skiing Videos**
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](#)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange.svg)](#)
@@ -276,7 +276,7 @@ If you find this useful, please cite our work:
 
 ```bibtex
 @article{chen2026canonfuse3d,
-  title = {Canonical-Aligned Dual-View 3D Pose Fusion without Camera Calibration for Skiing Videos},
+  title = {CanonFuse3D: Human-Centric Canonical Fusion for Calibration-Free Dual-View 3D Pose Estimation in Skiing Videos},
   author = {Chen, Kaixu and ...},
   year = {2026}
 }

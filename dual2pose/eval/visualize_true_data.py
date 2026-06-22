@@ -26,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 import torch
 from omegaconf import OmegaConf
 
@@ -356,6 +357,38 @@ def _style_pose_axis(ax, center: np.ndarray, radius: float) -> None:
     ax.legend(loc="upper left", bbox_to_anchor=(0.02, 0.98), fontsize=9, frameon=False)
 
 
+def _compress_vertical_whitespace(image_path: Path) -> None:
+    image = Image.open(image_path).convert("RGB")
+    pixels = np.asarray(image)
+    white_columns = (pixels > 248).all(axis=2).mean(axis=0)
+
+    segments: list[tuple[int, int]] = []
+    start: int | None = None
+    for idx, white_fraction in enumerate(white_columns):
+        if white_fraction > 0.985 and start is None:
+            start = idx
+        at_end = idx == len(white_columns) - 1
+        if start is not None and (white_fraction <= 0.985 or at_end):
+            end = idx if white_fraction <= 0.985 else idx + 1
+            if end - start >= 30:
+                segments.append((start, end))
+            start = None
+
+    keep = np.ones(pixels.shape[1], dtype=bool)
+    for start, end in segments:
+        width = end - start
+        touches_edge = start < 24 or end > pixels.shape[1] - 24
+        target = 0 if touches_edge else 24 if width >= 80 else 12
+        remove = width - target
+        if remove <= 0:
+            continue
+        remove_start = start + target // 2
+        keep[remove_start:remove_start + remove] = False
+
+    if not keep.all():
+        Image.fromarray(pixels[:, keep, :]).save(image_path)
+
+
 def _draw_frame_panel(ax, frame: np.ndarray | None, title: str) -> None:
     ax.set_title(title, fontsize=11, fontweight="bold", pad=3)
     if frame is None:
@@ -379,8 +412,8 @@ def _make_figure(
     alpha_pose: np.ndarray | None,
     output_path: Path,
 ) -> None:
-    fig = plt.figure(figsize=(13.5, 6.2), dpi=180)
-    gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 0.06, 2.25], wspace=0.04, hspace=0.04)
+    fig = plt.figure(figsize=(10.0, 4.05), dpi=180)
+    gs = fig.add_gridspec(2, 2, width_ratios=[0.82, 2.18], wspace=0.005, hspace=0.045)
 
     ax_left = fig.add_subplot(gs[0, 0])
     _draw_frame_panel(ax_left, left_frame, "Left Frame")
@@ -388,7 +421,7 @@ def _make_figure(
     ax_right = fig.add_subplot(gs[1, 0])
     _draw_frame_panel(ax_right, right_frame, "Right Frame")
 
-    ax_pose = fig.add_subplot(gs[:, 2], projection="3d")
+    ax_pose = fig.add_subplot(gs[:, 1], projection="3d")
     center, radius = _pose_limits([left_pose, right_pose, avg_pose, fused_pose])
     pose_items = [
         (left_pose, "Left SAM3D", "#2f80ed", 0.78),
@@ -399,10 +432,11 @@ def _make_figure(
     for pose, label, color, alpha in pose_items:
         _draw_pose_3d(ax_pose, pose, label, color, alpha=alpha)
     _style_pose_axis(ax_pose, center, radius)
-    fig.tight_layout(pad=0.15)
+    fig.subplots_adjust(left=0.006, right=0.994, bottom=0.018, top=0.95)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path, bbox_inches="tight", pad_inches=0.02, facecolor="white")
     plt.close(fig)
+    _compress_vertical_whitespace(output_path)
 
 
 def _resolve_ckpts(args) -> list[tuple[str, Path]]:
