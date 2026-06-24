@@ -44,5 +44,31 @@ class PlotAlphaVsMaskTests(unittest.TestCase):
         self.assertNotEqual(trends["random"]["mpjpe"][0], 0.26)
 
 
+    def test_paper_figure_draws_no_mask_reference_line(self):
+        paper_data = {
+            "ski_poseptz": {
+                "random": {"ratio": [0.0, 0.1], "mpjpe": [0.18, 0.26]},
+                "distal": {"ratio": [0.0, 0.1], "mpjpe": [0.18, 0.23]},
+            },
+            "unity": {
+                "random": {"ratio": [0.0, 0.1], "mpjpe": [0.27, 0.31]},
+                "temporal": {"ratio": [0.0, 0.1], "mpjpe": [0.27, 0.29]},
+            },
+        }
+
+        fig = plotter._make_both_view_paper_fig(paper_data)
+
+        try:
+            for ax in fig.axes:
+                ref_lines = [
+                    line
+                    for line in ax.lines
+                    if line.get_label() == "No mask" and line.get_linestyle() == "--"
+                ]
+                self.assertEqual(len(ref_lines), 1)
+        finally:
+            plotter.plt.close(fig)
+
+
 if __name__ == "__main__":
     unittest.main()

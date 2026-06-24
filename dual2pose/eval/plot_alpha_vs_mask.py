@@ -350,6 +350,21 @@ def _make_both_view_paper_fig(paper_data: Dict[str, Dict[str, Dict[str, List[flo
 
     for ax, dataset_name in zip(axes, ["ski_poseptz", "unity"]):
         trends = paper_data.get(dataset_name, {})
+        baseline_values = [
+            float(values["mpjpe"][0])
+            for values in trends.values()
+            if values.get("ratio") and values.get("mpjpe") and values["ratio"][0] == 0.0
+        ]
+        if baseline_values:
+            baseline = float(np.mean(baseline_values))
+            ax.axhline(
+                baseline,
+                color="#333333",
+                linestyle="--",
+                linewidth=1.4,
+                label="No mask",
+                zorder=1,
+            )
         for pattern in ["random", "distal", "temporal"]:
             if pattern not in trends:
                 continue
