@@ -113,8 +113,9 @@ worker count, traversal order, or resume position.
 
 - **Random:** independently select each of the 15 joints in each frame with
   probability equal to the severity ratio.
-- **Distal:** independently select only the eight wrist, elbow, knee, and ankle
-  joints in each frame with probability equal to the severity ratio.
+- **Distal:** independently select the same eight filtered indices used verbatim by
+  the archived pose-stream masking code (`[2,3,5,6,8,9,11,12]`) in each frame,
+  with probability equal to the severity ratio.
 - **Temporal:** select `round(ratio * 15)` joints for each camera stream and
   cover each selected joint during one independently positioned contiguous
   interval of 10 source-frame IDs. Defining this physical-time interval per

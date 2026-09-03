@@ -232,8 +232,8 @@ Expected: missing-module failure.
 - [ ] **Step 3: Implement exact frame requirement derivation**
 
 Match `UnityDatasetDualView` frame discovery: intersect ground truth with both
-native SAM3D streams, remove native `none_detected_frames`, and apply the same
-`torch.linspace(...).long()` subsampling. Persist pair-specific positions plus
+native SAM3D streams, remove native `none_detected_frames`, and apply
+the loader's `torch.round(torch.linspace(...)).long()` subsampling. Persist pair-specific positions plus
 the per-stream union. Validate person/action/camera identities and source paths.
 
 - [ ] **Step 4: Run frame-manifest tests to green**
