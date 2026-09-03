@@ -14,9 +14,11 @@ cross_validation:
   # 生成 index mapping 的配置（用于 cross_validation/main.py）
   num_persons: 2
   num_actions: 12
-  num_cameras: 108
+  # Executed Unity protocol: five camera layers x 36 azimuths.
+  num_cameras: 180
   strategies: [by_action]
-  n_splits: 5
+  # The archived action-disjoint indices contain fold_00 and fold_01.
+  n_splits: 2
   force_recreate: true
   use_layer_camera_filter: false
   selected_layers: [0, 1, 2, 3, 4]
@@ -35,14 +37,16 @@ data:
     sam3_results_path: ${data.raw.root_path}/sam3_results/person # 没有标签的训练数据
 
   unity:
-    root_path: /home/kaixu_chen/data/skiing/skiing_unity_dataset
+    root_path: /home/kaixu_chen/skiing/data/skiing_unity_dataset
+    index_path_rewrite_from: /home/kaixu_chen/data/skiing/skiing_unity_dataset
     data_path: ${data.unity.root_path}/data_pole_ski
     sam_3d_body_results_path: ${data.unity.root_path}/sam3d_body_results/inference # 有标签的训练数据
     sam3_results_path: ${data.unity.root_path}/sam3_results/inference # 只有2d标签的训练数据
     index_mapping_path: ${data.unity.root_path}/index_mapping/use_layer_camera_filter_disabled/camera_pairs_by_action_folds/fold_00.json # precomputed index mapping json file path
 
   ski_pose_ptz:
-    root_path: /home/kaixu_chen/data/skiing/Ski-PosePTZ-CameraDataset-png
+    root_path: /home/kaixu_chen/skiing/data/Ski-PosePTZ-CameraDataset-png
+    index_path_rewrite_from: /home/kaixu_chen/data/skiing/Ski-PosePTZ-CameraDataset-png
     data_path: ${data.ski_pose_ptz.root_path}/data
     sam_3d_body_results_path: ${data.ski_pose_ptz.root_path}/sam3d_body_results/inference # 有标签的训练数据
     index_mapping_path: ${data.ski_pose_ptz.root_path}/index_mapping/ski_pose_ptz_index_mapping.json
@@ -65,6 +69,8 @@ model:
 train:
   # Training config
   max_epochs: 100
+  seed: 42
+  test_ckpt_path: best
 
   gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
   fold: 0 # the fold number for cross validation

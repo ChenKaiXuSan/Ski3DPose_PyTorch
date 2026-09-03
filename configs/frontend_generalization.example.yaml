@@ -1,0 +1,28 @@
+# Copy this file and replace every /absolute/path placeholder.
+data_root: /absolute/path/to/skiing_unity_dataset
+fold_json: /absolute/path/to/skiing_unity_dataset/index_mapping/use_layer_camera_filter_disabled/camera_pairs_by_action_folds/fold_00.json
+rewrite_from: /home/kaixu_chen/data/skiing/skiing_unity_dataset
+fusion_checkpoint: /absolute/path/to/canonfuse_checkpoint.ckpt
+output_root: logs/eval_unity_frontend_generalization
+fold: 0
+split: test
+device: cuda:0
+export_batch_size: 64
+eval_batch_size: 256
+num_workers: 8
+include_sam3d: true
+
+frontends:
+  videopose3d:
+    repo: /absolute/path/to/VideoPose3D
+    checkpoint: /absolute/path/to/pretrained_h36m_cpn.bin
+  poseformer:
+    repo: /absolute/path/to/PoseFormer
+    checkpoint: /absolute/path/to/gt81f.bin
+    frames: 81
+  motionbert:
+    repo: /absolute/path/to/MotionBERT
+    checkpoint: /absolute/path/to/motionbert_ft_h36m_mmpose.pth
+    config: /absolute/path/to/MotionBERT/configs/pose3d/MB_ft_h36m.yaml
+    # Required for this trusted official OpenMMLab .pth with legacy metadata.
+    allow_unsafe_checkpoint: true

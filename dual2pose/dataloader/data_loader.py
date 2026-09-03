@@ -36,6 +36,7 @@ from .unity_dataset_dual_view import DualViewUnityDataset
 from .ski_poseptz_dataset_dual_view import LabeledSkiPosePTZDataset
 
 from .utils import Div255
+from dual2pose.path_rewrite import rewrite_data_paths
 import logging
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,10 @@ class UnityDataModule(LightningDataModule):
 
         # * this is the dataset idx, which include the train/val dataset idx.
         self._index_mapping = opt.data.unity.index_mapping_path
+        self._data_root = str(opt.data.unity.root_path)
+        self._index_path_rewrite_from = str(
+            getattr(opt.data.unity, "index_path_rewrite_from", self._data_root)
+        )
 
         self.mapping_transform = Compose(
             [
@@ -97,9 +102,12 @@ class UnityDataModule(LightningDataModule):
         so we directly use the pytorchvideo API to load the video.
         AKA, use whole video to validate the model.
         """
-        self._dataset_idx = load_index_mapping(
-            self._index_mapping
-        )  # 预加载第0折数据索引，后续在setup中根据fold切换
+        loaded_index = load_index_mapping(self._index_mapping)
+        self._dataset_idx = rewrite_data_paths(
+            loaded_index,
+            old_root=self._index_path_rewrite_from,
+            new_root=self._data_root,
+        )
 
     def setup(self, stage: Optional[str] = None) -> None:
         """
@@ -170,7 +178,7 @@ class UnityDataModule(LightningDataModule):
             num_workers=self._num_workers,
             pin_memory=False,  # 🚀 GPU内存传输加速（改自True）
             shuffle=False,
-            drop_last=True,
+            drop_last=False,
         )
 
         return val_data_loader
@@ -188,7 +196,7 @@ class UnityDataModule(LightningDataModule):
             num_workers=self._num_workers,
             pin_memory=False,  # 🚀 GPU内存传输加速（改自True）
             shuffle=False,
-            drop_last=True,
+            drop_last=False,
         )
 
         return test_data_loader

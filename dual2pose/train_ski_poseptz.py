@@ -135,6 +135,8 @@ def _build_ski_poseptz_loader(
     shuffle: bool,
     drop_last: bool,
     pin_memory: bool,
+    path_rewrite_from: str | None = None,
+    path_rewrite_to: str | None = None,
 ) -> DataLoader:
     dataset = LabeledSkiPosePTZDataset(
         index_mapping=index_mapping,
@@ -144,6 +146,8 @@ def _build_ski_poseptz_loader(
         load_3d_kpt=True,
         target_t=time_window,
         split=split,
+        path_rewrite_from=path_rewrite_from,
+        path_rewrite_to=path_rewrite_to,
     )
 
     def _collate_ski_poseptz_batch(batch):
@@ -195,6 +199,11 @@ class SkiPosePTZDataModule(LightningDataModule):
         self._num_workers = int(config.data.num_workers)
         self._time_window = int(config.data.time_window)
         self._index_mapping = Path(config.data.ski_pose_ptz.index_mapping_path)
+        rewrite_from = getattr(config.data.ski_pose_ptz, "index_path_rewrite_from", None)
+        self._path_rewrite_from = str(rewrite_from) if rewrite_from else None
+        self._path_rewrite_to = (
+            str(config.data.ski_pose_ptz.root_path) if rewrite_from else None
+        )
         self._pin_memory = torch.cuda.is_available()
 
     def train_dataloader(self) -> DataLoader:
@@ -207,6 +216,8 @@ class SkiPosePTZDataModule(LightningDataModule):
             shuffle=True,
             drop_last=True,
             pin_memory=self._pin_memory,
+            path_rewrite_from=self._path_rewrite_from,
+            path_rewrite_to=self._path_rewrite_to,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -220,6 +231,8 @@ class SkiPosePTZDataModule(LightningDataModule):
             shuffle=False,
             drop_last=False,
             pin_memory=self._pin_memory,
+            path_rewrite_from=self._path_rewrite_from,
+            path_rewrite_to=self._path_rewrite_to,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -232,6 +245,8 @@ class SkiPosePTZDataModule(LightningDataModule):
             shuffle=False,
             drop_last=False,
             pin_memory=self._pin_memory,
+            path_rewrite_from=self._path_rewrite_from,
+            path_rewrite_to=self._path_rewrite_to,
         )
 
 

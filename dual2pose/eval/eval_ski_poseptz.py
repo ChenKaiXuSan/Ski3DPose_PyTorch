@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib
+import json
 import math
 import os
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import torch
 from omegaconf import OmegaConf
@@ -89,7 +91,9 @@ def _build_config(args: argparse.Namespace):
     config.data.batch_size = int(args.batch_size)
     config.data.num_workers = int(args.num_workers)
     ckpt_dir = args.ckpt_path.resolve().parent.parent
-    config.log_path = str(ckpt_dir)
+    config.log_path = str(
+        Path(args.output_path).resolve() if args.output_path else ckpt_dir
+    )
     return config
 
 
@@ -139,22 +143,65 @@ def _safe_accel_err(pred: torch.Tensor | None, label: torch.Tensor | None) -> fl
     return float(torch.norm(pred_acc - label_acc, dim=-1).mean().item())
 
 
-def _mean_ignore_nan(values: list[float]) -> float:
-    clean = [value for value in values if not math.isnan(value)]
-    if not clean:
-        return float("nan")
-    return float(sum(clean) / len(clean))
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_provenance(
+    *,
+    checkpoint: str | Path,
+    index_mapping: str | Path,
+    sample_count: int,
+    split: str,
+    seed: int,
+    joint_subset: str,
+    units: str,
+    batch_size: int,
+    time_window: int,
+    path_rewrite_from: str | None = None,
+    path_rewrite_to: str | None = None,
+) -> Dict[str, Any]:
+    checkpoint_path = Path(checkpoint).resolve()
+    index_mapping_path = Path(index_mapping).resolve()
+    return {
+        "checkpoint": str(checkpoint_path),
+        "checkpoint_sha256": _file_sha256(checkpoint_path),
+        "index_mapping": str(index_mapping_path),
+        "index_mapping_sha256": _file_sha256(index_mapping_path),
+        "sample_count": int(sample_count),
+        "split": str(split),
+        "seed": int(seed),
+        "joint_subset": str(joint_subset),
+        "units": str(units),
+        "batch_size": int(batch_size),
+        "time_window": int(time_window),
+        "drop_last": False,
+        "path_rewrite_from": None if path_rewrite_from is None else str(path_rewrite_from),
+        "path_rewrite_to": None if path_rewrite_to is None else str(path_rewrite_to),
+    }
 
 
 def _summarize_test_outputs(test_outputs: list[Dict[str, torch.Tensor]]) -> Dict[str, Dict[str, float]]:
-    stats: Dict[str, Dict[str, list[float]]] = {
-        "fused": {"mpjpe": [], "accel_err": []},
-        "sam3d_left": {"mpjpe": [], "accel_err": []},
-        "sam3d_right": {"mpjpe": [], "accel_err": []},
-        "raw_avg": {"mpjpe": [], "accel_err": []},
-        "left_canonical": {"mpjpe": [], "accel_err": []},
-        "right_canonical": {"mpjpe": [], "accel_err": []},
-        "canonical_avg": {"mpjpe": [], "accel_err": []},
+    stats: Dict[str, Dict[str, float | int]] = {
+        name: {
+            "mpjpe_sum": 0.0,
+            "mpjpe_count": 0,
+            "accel_sum": 0.0,
+            "accel_count": 0,
+        }
+        for name in (
+            "fused",
+            "sam3d_left",
+            "sam3d_right",
+            "raw_avg",
+            "left_canonical",
+            "right_canonical",
+            "canonical_avg",
+        )
     }
 
     for batch_output in test_outputs:
@@ -180,13 +227,30 @@ def _summarize_test_outputs(test_outputs: list[Dict[str, torch.Tensor]]) -> Dict
         }
 
         for name, (pred, label) in pairs.items():
-            stats[name]["mpjpe"].append(_safe_mpjpe(pred, label))
-            stats[name]["accel_err"].append(_safe_accel_err(pred, label))
+            if pred is None or label is None or pred.numel() == 0 or label.numel() == 0:
+                continue
+            point_error = torch.norm(pred - label, dim=-1)
+            stats[name]["mpjpe_sum"] += float(point_error.double().sum().item())
+            stats[name]["mpjpe_count"] += int(point_error.numel())
+            if pred.shape[1] >= 3 and label.shape[1] >= 3:
+                pred_acc = pred[:, 2:] - 2.0 * pred[:, 1:-1] + pred[:, :-2]
+                label_acc = label[:, 2:] - 2.0 * label[:, 1:-1] + label[:, :-2]
+                accel_error = torch.norm(pred_acc - label_acc, dim=-1)
+                stats[name]["accel_sum"] += float(accel_error.double().sum().item())
+                stats[name]["accel_count"] += int(accel_error.numel())
 
     return {
         name: {
-            "mpjpe": _mean_ignore_nan(values["mpjpe"]),
-            "accel_err": _mean_ignore_nan(values["accel_err"]),
+            "mpjpe": (
+                float(values["mpjpe_sum"]) / int(values["mpjpe_count"])
+                if int(values["mpjpe_count"]) > 0
+                else float("nan")
+            ),
+            "accel_err": (
+                float(values["accel_sum"]) / int(values["accel_count"])
+                if int(values["accel_count"]) > 0
+                else float("nan")
+            ),
         }
         for name, values in stats.items()
     }
@@ -207,6 +271,10 @@ def main() -> None:
     seed_everything(42, workers=True)
     config = _build_config(args)
 
+    ski_config = config.data.ski_pose_ptz
+    path_rewrite_from = getattr(ski_config, "index_path_rewrite_from", None)
+    path_rewrite_to = str(ski_config.root_path) if path_rewrite_from else None
+
     test_dataset = LabeledSkiPosePTZDataset(
         index_mapping=Path(config.data.ski_pose_ptz.index_mapping_path),
         transform=None,
@@ -215,6 +283,8 @@ def main() -> None:
         load_3d_kpt=True,
         target_t=int(args.time_window),
         split=args.split,
+        path_rewrite_from=str(path_rewrite_from) if path_rewrite_from else None,
+        path_rewrite_to=path_rewrite_to,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -241,26 +311,40 @@ def main() -> None:
         dataloaders=test_loader,
         ckpt_path=str(args.ckpt_path),
         verbose=True,
+        weights_only=False,
     )
 
     baseline_metrics = _summarize_test_outputs(list(getattr(model, "test_outputs", [])))
-    fused_mpjpe = metrics[0].get("test/mpjpe", metrics[0].get("mpjpe", float("nan"))) if metrics else float("nan")
-    fused_accel_err = metrics[0].get("test/accel_err", metrics[0].get("accel_err", float("nan"))) if metrics else float("nan")
+    fused_mpjpe = baseline_metrics.get("fused", {}).get("mpjpe", float("nan"))
+    fused_accel_err = baseline_metrics.get("fused", {}).get("accel_err", float("nan"))
     canonical_avg_mpjpe = baseline_metrics.get("canonical_avg", {}).get("mpjpe", float("nan"))
     canonical_avg_accel = baseline_metrics.get("canonical_avg", {}).get("accel_err", float("nan"))
     raw_avg_mpjpe = baseline_metrics.get("raw_avg", {}).get("mpjpe", float("nan"))
     raw_avg_accel = baseline_metrics.get("raw_avg", {}).get("accel_err", float("nan"))
 
-    summary_root = Path(args.output_path) if args.output_path else Path(config.log_path)
-    summary_dir = summary_root / "summary"
+    summary_dir = Path(config.log_path) / "summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
+    provenance = _build_provenance(
+        checkpoint=args.ckpt_path,
+        index_mapping=Path(config.data.ski_pose_ptz.index_mapping_path),
+        sample_count=len(test_dataset),
+        split=args.split,
+        seed=42,
+        joint_subset="common13",
+        units="normalized_dataset_coordinates",
+        batch_size=int(args.batch_size),
+        time_window=int(args.time_window),
+        path_rewrite_from=str(path_rewrite_from) if path_rewrite_from else None,
+        path_rewrite_to=path_rewrite_to,
+    )
 
     run_tag = args.ckpt_path.stem if getattr(args, "ckpt_path", None) else "run"
     comparison_csv = summary_dir / f"baseline_comparison_{run_tag}.csv"
-    with open(comparison_csv, "w", encoding="utf-8", newline="") as fp:
+    with comparison_csv.open("w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(
             fp,
             fieldnames=[
+                *provenance.keys(),
                 "fused_mpjpe",
                 "canonical_avg_mpjpe",
                 "raw_avg_mpjpe",
@@ -276,6 +360,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerow(
             {
+                **provenance,
                 "fused_mpjpe": fused_mpjpe,
                 "canonical_avg_mpjpe": canonical_avg_mpjpe,
                 "raw_avg_mpjpe": raw_avg_mpjpe,
@@ -289,11 +374,42 @@ def main() -> None:
             }
         )
 
+    method_csv = summary_dir / f"method_comparison_{run_tag}.csv"
+    with method_csv.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(
+            fp,
+            fieldnames=["method", "mpjpe", "accel_err", *provenance.keys()],
+        )
+        writer.writeheader()
+        for method, values in baseline_metrics.items():
+            writer.writerow(
+                {
+                    "method": method,
+                    "mpjpe": values["mpjpe"],
+                    "accel_err": values["accel_err"],
+                    **provenance,
+                }
+            )
+
+    result_json = summary_dir / f"journal_evaluation_{run_tag}.json"
+    result_json.write_text(
+        json.dumps(
+            {"provenance": provenance, "metrics": baseline_metrics},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     report_path = summary_dir / f"report_{run_tag}.txt"
-    with open(report_path, "w", encoding="utf-8") as fp:
+    with report_path.open("w", encoding="utf-8") as fp:
         fp.write("Cross-View Fusion Test Report\n")
         fp.write("=" * 40 + "\n")
-        fp.write("[Primary]\n")
+        fp.write("[Provenance]\n")
+        for key, value in provenance.items():
+            fp.write(f"{key}: {value}\n")
+        fp.write("\n[Primary]\n")
         fp.write(f"fused_mpjpe: {_format_float(fused_mpjpe)}\n")
         fp.write(f"fused_accel_err: {_format_float(fused_accel_err)}\n")
         fp.write("\n[Baselines]\n")
@@ -311,6 +427,8 @@ def main() -> None:
         for key, value in item.items():
             print(f"{key}: {value}")
     print(f"baseline comparison saved to: {comparison_csv}")
+    print(f"method comparison saved to: {method_csv}")
+    print(f"journal evaluation saved to: {result_json}")
     print(f"Report saved to: {report_path}")
 
 

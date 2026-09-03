@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 from pytorch_lightning import LightningModule
 
-from models.crossview_fusion import CrossViewCanonicalFusion
+from dual2pose.models.crossview_fusion import CrossViewCanonicalFusion
 from .canonicalize import canonicalize_pose_torch
 
 logger = logging.getLogger(__name__)
@@ -341,7 +341,9 @@ class CrossViewFusionTrainer(LightningModule):
         """Run inference on all variants and collect outputs."""
         self._shared_step(batch, stage="test")
 
-        _results = batch.get("_variant_results", {})
+        _results = dict(batch.get("_variant_results", {}))
+        if isinstance(batch.get("meta"), dict):
+            _results["meta"] = batch["meta"]
 
         self.test_outputs.append(_results)
 

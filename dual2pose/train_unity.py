@@ -20,8 +20,11 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
+import json
 import logging
 import os
+from pathlib import Path
+import sys
 
 import hydra
 from omegaconf import DictConfig
@@ -34,6 +37,10 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
 
 #####################################
@@ -41,6 +48,8 @@ from dataloader.data_loader import UnityDataModule, SkiPosePTZDataModule
 #####################################
 from trainer.train_dual2pose import Dual2PoseTrainer
 from trainer.train_crossview_fusion import CrossViewFusionTrainer
+from training_protocol import resolve_fold_index_path, validate_fold_metadata
+from dual2pose.eval.multiseed_metrics import summarize_test_outputs_by_action
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +61,12 @@ logger = logging.getLogger(__name__)
 )
 def init_params(config: DictConfig):
 
-    seed_everything(42, workers=True)
+    fold_index_path = resolve_fold_index_path(
+        Path(str(config.data.unity.root_path)), int(config.train.fold)
+    )
+    validate_fold_metadata(fold_index_path, int(config.train.fold))
+    config.data.unity.index_mapping_path = str(fold_index_path)
+    seed_everything(int(config.train.seed), workers=True)
 
     # * select experiment
     monitor_metric = "val/video_acc"
@@ -130,11 +144,38 @@ def init_params(config: DictConfig):
     trainer.fit(classification_module, unity_data_module)
 
     # save the metrics to file
-    trainer.test(
+    test_metrics = trainer.test(
         classification_module,
         unity_data_module,
-        ckpt_path="last",
+        ckpt_path=str(config.train.test_ckpt_path),
     )
+    if config.model.backbone == "crossview_fusion":
+        action_metrics = summarize_test_outputs_by_action(
+            list(getattr(classification_module, "test_outputs", []))
+        )
+        result_path = Path(str(config.log_path)) / "test_metrics_by_action.json"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(
+                {
+                    "fold": int(config.train.fold),
+                    "seed": int(config.train.seed),
+                    "index_mapping_path": str(config.data.unity.index_mapping_path),
+                    "test_checkpoint_policy": str(config.train.test_ckpt_path),
+                    "best_model_path": model_check_point.best_model_path,
+                    "best_model_score": (
+                        float(model_check_point.best_model_score.item())
+                        if model_check_point.best_model_score is not None
+                        else None
+                    ),
+                    "last_model_path": model_check_point.last_model_path,
+                    "trainer_test_metrics": test_metrics,
+                    **action_metrics,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

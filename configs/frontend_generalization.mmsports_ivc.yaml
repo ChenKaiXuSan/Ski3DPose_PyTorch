@@ -1,0 +1,21 @@
+# Copy this file and replace every /absolute/path placeholder.
+data_root: /home/kaixu_chen/skiing/data/skiing_unity_dataset
+fold_json: /home/kaixu_chen/skiing/data/skiing_unity_dataset/index_mapping/use_layer_camera_filter_disabled/camera_pairs_by_action_folds/fold_00.json
+rewrite_from: /home/kaixu_chen/data/skiing/skiing_unity_dataset
+fusion_checkpoint: /home/kaixu_chen/skiing/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt
+output_root: logs/ivc_mmsports_extension/frontend_generalization
+fold: 0
+split: test
+device: cuda:0
+export_batch_size: 64
+eval_batch_size: 256
+num_workers: 8
+include_sam3d: true
+
+frontends:
+  videopose3d:
+    manifest: logs/eval_unity_frontend_generalization/predictions/videopose3d/videopose3d_manifest.json
+  poseformer:
+    manifest: logs/eval_unity_frontend_generalization/predictions/poseformer/poseformer_manifest.json
+  motionbert:
+    manifest: logs/eval_unity_frontend_generalization/predictions/motionbert/motionbert_manifest.json

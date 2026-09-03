@@ -12,7 +12,52 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from map_config import filter_h36m_kpts, filter_sam3d_body_kpts
+from dual2pose.map_config import filter_h36m_kpts, filter_sam3d_body_kpts
+from dual2pose.path_rewrite import rewrite_data_paths
+
+
+def load_ski_poseptz_index_mapping(
+    index_mapping: str | Path,
+    *,
+    split: Optional[str] = None,
+    path_rewrite_from: Optional[str] = None,
+    path_rewrite_to: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    mapping_path = Path(index_mapping)
+    if not mapping_path.exists():
+        raise FileNotFoundError(f"index_mapping not found: {mapping_path}")
+    with mapping_path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+
+    if (path_rewrite_from is None) != (path_rewrite_to is None):
+        raise ValueError("path_rewrite_from and path_rewrite_to must be provided together")
+    if path_rewrite_from is not None and path_rewrite_to is not None:
+        raw = rewrite_data_paths(
+            raw,
+            old_root=str(path_rewrite_from),
+            new_root=str(path_rewrite_to),
+        )
+
+    if isinstance(raw, list):
+        configs = raw
+    elif isinstance(raw, dict):
+        if split is not None:
+            if split not in raw:
+                raise KeyError(
+                    f"split '{split}' not found in index_mapping keys: {list(raw.keys())}"
+                )
+            configs = raw[split]
+        else:
+            configs = []
+            for value in raw.values():
+                if isinstance(value, list):
+                    configs.extend(value)
+    else:
+        raise ValueError(f"Unsupported index_mapping format: {type(raw)}")
+
+    if not isinstance(configs, list) or not configs:
+        raise ValueError("index_mapping contains no entries.")
+    return configs
 
 
 class LabeledSkiPosePTZDataset(Dataset):
@@ -44,6 +89,9 @@ class LabeledSkiPosePTZDataset(Dataset):
         target_t: Number of frames to subsample each clip to (required).
         min_t: Minimum number of common frames required to include a clip.
         split: Select a split when the JSON root is a dict (e.g. "train").
+        path_rewrite_from: Optional archived root embedded in index entries.
+        path_rewrite_to: Runtime root replacing ``path_rewrite_from`` in memory;
+            the fixed index JSON is not modified.
     """
 
     def __init__(
@@ -56,6 +104,8 @@ class LabeledSkiPosePTZDataset(Dataset):
         target_t: int = 32,
         min_t: int = 2,
         split: Optional[str] = None,
+        path_rewrite_from: Optional[str] = None,
+        path_rewrite_to: Optional[str] = None,
     ) -> None:
         super().__init__()
         self._transform = transform
@@ -69,31 +119,12 @@ class LabeledSkiPosePTZDataset(Dataset):
         if self._min_t <= 0:
             raise ValueError("min_t must be > 0")
 
-        # ── Load index mapping ──────────────────────────────────────────────
-        mapping_path = Path(index_mapping)
-        if not mapping_path.exists():
-            raise FileNotFoundError(f"index_mapping not found: {mapping_path}")
-        with mapping_path.open("r", encoding="utf-8") as f:
-            raw = json.load(f)
-
-        if isinstance(raw, list):
-            configs: List[Dict[str, Any]] = raw
-        elif isinstance(raw, dict):
-            if split is not None:
-                if split not in raw:
-                    raise KeyError(f"split '{split}' not found in index_mapping keys: {list(raw.keys())}")
-                configs = raw[split]
-            else:
-                # Flatten all split lists (skip metadata keys)
-                configs = []
-                for v in raw.values():
-                    if isinstance(v, list):
-                        configs.extend(v)
-        else:
-            raise ValueError(f"Unsupported index_mapping format: {type(raw)}")
-
-        if not configs:
-            raise ValueError("index_mapping contains no entries.")
+        configs = load_ski_poseptz_index_mapping(
+            index_mapping,
+            split=split,
+            path_rewrite_from=path_rewrite_from,
+            path_rewrite_to=path_rewrite_to,
+        )
 
         self._pseudo_gt_cache: Dict[str, Dict[str, np.ndarray]] = {}
 

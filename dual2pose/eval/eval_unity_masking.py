@@ -31,6 +31,13 @@ from torch.utils.data import DataLoader, default_collate
 import matplotlib.pyplot as plt
 import numpy as np
 
+from dual2pose.eval.extension_experiment_utils import (
+    build_experiment_provenance,
+    complete_test_dataloader,
+    DEFAULT_DATA_ROOT_IN_INDEX,
+    patch_index_mapping_path_rewrite,
+)
+
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = THIS_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -53,7 +60,11 @@ UnityDataModule, CrossViewFusionTrainer, Dual2PoseTrainer = _repo_symbols()
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CKPT_PATH = "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/train_unity/crossview_fusion/2026-05-14/02-46-56/checkpoints/fold_0/last.ckpt"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CKPT_PATH = (
+    REPO_ROOT
+    / "logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt"
+)
 
 
 @dataclass(frozen=True)
@@ -250,13 +261,8 @@ class MaskedUnityDataModule(LightningDataModule):
             collated = default_collate(batch_items)
             return _apply_occlusion_to_batch(collated, self.setting)
 
-        return DataLoader(
-            dataset=base_loader.dataset,
-            batch_size=base_loader.batch_size,
-            num_workers=base_loader.num_workers,
-            pin_memory=base_loader.pin_memory,
-            drop_last=base_loader.drop_last,
-            shuffle=False,
+        return complete_test_dataloader(
+            base_loader,
             collate_fn=_masked_collate,
         )
 
@@ -367,16 +373,34 @@ def _summarize_outputs(
     return summary
 
 
-def _build_default_study() -> List[OcclusionSetting]:
-    settings: List[OcclusionSetting] = []
+def build_study(
+    view_modes: Iterable[str],
+    patterns: Iterable[str],
+    ratios: Iterable[float],
+) -> List[OcclusionSetting]:
+    """Build a deterministic masking factor grid for the journal protocol."""
 
-    # Full sweep: 4 view_modes (none/left/right/both) x 3 patterns x ratio 0-1 step 0.05
-    ratios = [step / 20 for step in range(21)]  # 21 points: 0.0 -- 1.0
-    view_modes = ["none", "left", "right", "both"]
-    patterns = ["random", "distal", "temporal"]
-    for view_mode in view_modes:
-        ratios_for_view = [0.0] if view_mode == "none" else ratios
-        for pattern in patterns:
+    valid_views = {"none", "left", "right", "both"}
+    valid_patterns = {"random", "distal", "temporal"}
+    normalized_views = [str(value).strip() for value in view_modes]
+    normalized_patterns = [str(value).strip() for value in patterns]
+    normalized_ratios = [float(value) for value in ratios]
+    if not normalized_views or any(value not in valid_views for value in normalized_views):
+        raise ValueError("view_modes must contain only none, left, right, or both")
+    if not normalized_patterns or any(
+        value not in valid_patterns for value in normalized_patterns
+    ):
+        raise ValueError("patterns must contain only random, distal, or temporal")
+    if not normalized_ratios or any(
+        not math.isfinite(value) or value < 0.0 or value > 1.0
+        for value in normalized_ratios
+    ):
+        raise ValueError("ratios must be finite values in [0, 1]")
+
+    settings: List[OcclusionSetting] = []
+    for view_mode in normalized_views:
+        ratios_for_view = [0.0] if view_mode == "none" else normalized_ratios
+        for pattern in normalized_patterns:
             for ratio in ratios_for_view:
                 r_str = f"{ratio:.2f}".replace(".", "p")
                 settings.append(
@@ -386,10 +410,34 @@ def _build_default_study() -> List[OcclusionSetting]:
                         pattern=pattern,
                         ratio=ratio,
                         corruption="noise_masking",
-                        temporal_span=10 if pattern == "temporal" else None,
+                        temporal_span=10,
                     )
                 )
     return settings
+
+
+def _parse_csv_values(name: str, default: str) -> List[str]:
+    return [value.strip() for value in os.environ.get(name, default).split(",") if value.strip()]
+
+
+def _build_default_study() -> List[OcclusionSetting]:
+    return build_study(
+        view_modes=_parse_csv_values("MASK_VIEW_MODES", "left,right,both"),
+        patterns=_parse_csv_values("MASK_PATTERNS", "random,distal,temporal"),
+        ratios=[
+            float(value)
+            for value in _parse_csv_values("MASK_RATIOS", "0,0.25,0.5,0.75,1")
+        ],
+    )
+
+
+def _configure_index_mapping_rewrite(config: DictConfig) -> None:
+    patch_index_mapping_path_rewrite(
+        old_root=os.environ.get(
+            "DATA_PATH_REWRITE_FROM", DEFAULT_DATA_ROOT_IN_INDEX
+        ),
+        new_root=str(config.data.unity.root_path),
+    )
 
 
 def _build_model(config: DictConfig):
@@ -537,15 +585,21 @@ def init_params(config: DictConfig | None = None) -> None:
     if config is None:
         raise ValueError("Hydra did not provide config")
 
-    seed_everything(42, workers=True)
+    seed = int(os.environ.get("EVAL_SEED", "42"))
+    seed_everything(seed, workers=True)
     config.train.gpu = int(getattr(config.train, "gpu", 0))
 
-    ckpt_path = DEFAULT_CKPT_PATH
+    ckpt_path = Path(os.environ.get("EVAL_CKPT_PATH", DEFAULT_CKPT_PATH))
     failure_threshold = float(os.environ.get("FAILURE_THRESHOLD", "0.15"))
 
-    results_root = "/home/kaixu_chen/Skiing_Canonical_DualView_3D_Pose_PyTorch/logs/eval_unity_masking"
-    results_root = Path(results_root)
+    results_root = Path(
+        os.environ.get(
+            "EVAL_OUTPUT_ROOT",
+            str(Path(__file__).resolve().parents[2] / "logs" / "eval_unity_masking"),
+        )
+    )
     results_root.mkdir(parents=True, exist_ok=True)
+    _configure_index_mapping_rewrite(config)
 
     settings = _build_default_study()
     summary_rows: List[Dict[str, Any]] = []
@@ -574,6 +628,14 @@ def init_params(config: DictConfig | None = None) -> None:
 
         test_outputs = list(getattr(model, "test_outputs", []))
         flat = _flatten_test_outputs(test_outputs)
+        provenance = build_experiment_provenance(
+            ckpt_path,
+            sample_count=int(flat["fused"].shape[0]),
+            fold=int(config.train.fold),
+            seed=seed,
+            joint_subset="all15",
+            units="dataset_coordinate_units",
+        )
         metrics = _summarize_outputs(flat=flat, failure_threshold=failure_threshold)
         alpha_tensor = _collect_alpha_tensor(test_outputs)
         alpha_global_mean = (
@@ -594,6 +656,7 @@ def init_params(config: DictConfig | None = None) -> None:
                 {
                     "setting": setting.__dict__,
                     "failure_threshold": failure_threshold,
+                    "provenance": provenance,
                     "metrics": metrics,
                 },
                 fp,
@@ -630,6 +693,7 @@ def init_params(config: DictConfig | None = None) -> None:
                 "raw_avg_acceleration_error": raw_avg_acc,
                 "delta_acc_full_minus_avg": fused_acc - canonical_avg_acc,
                 "delta_acc_full_minus_raw_avg": fused_acc - raw_avg_acc,
+                **provenance,
             }
         )
 
@@ -698,6 +762,13 @@ def init_params(config: DictConfig | None = None) -> None:
         "raw_avg_acceleration_error",
         "delta_acc_full_minus_avg",
         "delta_acc_full_minus_raw_avg",
+        "checkpoint",
+        "checkpoint_sha256",
+        "sample_count",
+        "fold",
+        "seed",
+        "joint_subset",
+        "units",
     ]
     with open(summary_csv, "w", encoding="utf-8", newline="") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from map_config import (
+from dual2pose.map_config import (
     UnityDataConfig,
     filter_sam3d_body_kpts,
     filter_unity_kpts,

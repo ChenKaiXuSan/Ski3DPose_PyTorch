@@ -202,6 +202,9 @@ def main() -> None:
 
     seed_everything(42, workers=True)
     config = _build_config(args)
+    ski_config = config.data.ski_pose_ptz
+    path_rewrite_from = getattr(ski_config, "index_path_rewrite_from", None)
+    path_rewrite_to = str(ski_config.root_path) if path_rewrite_from else None
     base_log_path = Path(args.output_path) if getattr(args, "output_path", None) else Path(config.log_path)
 
     test_dataset = LabeledSkiPosePTZDataset(
@@ -212,6 +215,8 @@ def main() -> None:
         load_3d_kpt=True,
         target_t=int(args.time_window),
         split=args.split,
+        path_rewrite_from=str(path_rewrite_from) if path_rewrite_from else None,
+        path_rewrite_to=path_rewrite_to,
     )
 
     use_gpu = torch.cuda.is_available() and not args.cpu
