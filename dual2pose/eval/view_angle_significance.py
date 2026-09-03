@@ -238,8 +238,12 @@ def _bootstrap_mean_interval(
 ) -> tuple[float, float]:
     if resamples <= 0:
         raise ValueError("bootstrap_resamples must be positive")
-    indices = rng.integers(0, values.size, size=(resamples, values.size))
-    means = values[indices].mean(axis=1)
+    means = np.empty(resamples, dtype=float)
+    # Keep production memory bounded for bins containing thousands of pairs.
+    for start in range(0, resamples, 256):
+        stop = min(start + 256, resamples)
+        indices = rng.integers(0, values.size, size=(stop - start, values.size))
+        means[start:stop] = values[indices].mean(axis=1)
     low, high = np.quantile(means, [0.025, 0.975])
     return float(low), float(high)
 
