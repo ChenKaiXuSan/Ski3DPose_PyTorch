@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dual2pose.eval.run_unity_view_angle_significance import write_angle_artifacts
+from dual2pose.eval.run_unity_view_angle_significance import (
+    validate_protocol_batch_size,
+    write_angle_artifacts,
+)
 
 
 def _pair_rows(count):
@@ -56,6 +59,11 @@ def _statistics(action_rows, clusters):
 
 
 class ViewAngleSignificanceArtifactTest(unittest.TestCase):
+    def test_batch_referenced_protocol_requires_archived_batch_size(self):
+        validate_protocol_batch_size(256)
+        with self.assertRaisesRegex(ValueError, "batch_size=256"):
+            validate_protocol_batch_size(4096)
+
     def test_writer_rejects_incomplete_action_pair_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "64440"):

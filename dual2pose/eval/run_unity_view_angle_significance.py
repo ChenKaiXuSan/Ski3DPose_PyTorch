@@ -155,6 +155,16 @@ def _software_provenance() -> dict[str, Any]:
     }
 
 
+def validate_protocol_batch_size(batch_size: int) -> None:
+    """Lock the batch-referenced canonical transform to the archived protocol."""
+
+    if int(batch_size) != 256:
+        raise ValueError(
+            "The archived code uses a batch-referenced first-frame transform; "
+            "E4 therefore requires data.batch_size=256 for numerical comparability"
+        )
+
+
 @hydra.main(version_base=None, config_path="../../configs", config_name="dual2pose.yaml")
 def init_params(config: DictConfig | None = None) -> None:
     if config is None:
@@ -162,6 +172,7 @@ def init_params(config: DictConfig | None = None) -> None:
     seed = int(os.environ.get("EVAL_SEED", "42"))
     seed_everything(seed, workers=True)
     config.train.gpu = int(getattr(config.train, "gpu", 0))
+    validate_protocol_batch_size(int(config.data.batch_size))
     checkpoint = Path(os.environ.get("EVAL_CKPT_PATH", str(DEFAULT_CKPT_PATH)))
     output_root = Path(os.environ.get("EVAL_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT)))
     bootstrap_resamples = int(os.environ.get("BOOTSTRAP_RESAMPLES", "10000"))

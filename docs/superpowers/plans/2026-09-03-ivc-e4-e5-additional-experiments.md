@@ -174,7 +174,7 @@ Run:
 EVAL_OUTPUT_ROOT=logs/ivc_mmsports_extension/view_angle \
 EVAL_SEED=42 \
 python3 -m dual2pose.eval.run_unity_view_angle_significance \
-  data.num_workers=32 data.batch_size=4096 train.gpu=0
+  data.num_workers=8 data.batch_size=256 train.gpu=0
 ```
 
 Expected: exit 0, 64,440 action-pair rows, 16,110 camera-pair clusters, six
@@ -476,7 +476,7 @@ python3 -m dual2pose.eval.eval_unity_image_occlusion \
   --manifest-root logs/ivc_mmsports_extension/image_occlusion/inference \
   --output-root logs/ivc_mmsports_extension/image_occlusion \
   --checkpoint logs/train_unity/crossview_fusion/2026-05-14/04-55-35/checkpoints/last.ckpt \
-  --gpu 0 --batch-size 4096 --num-workers 32
+  --gpu 0 --batch-size 256 --num-workers 8
 ```
 
 Expected: 18 rows, each with sample count 64,440; negative cells retained.

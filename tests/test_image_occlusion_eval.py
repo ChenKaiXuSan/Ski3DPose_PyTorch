@@ -7,6 +7,7 @@ import torch
 
 from dual2pose.eval.eval_unity_image_occlusion import (
     ImageOcclusionManifest,
+    build_argument_parser,
     build_image_occlusion_study,
     replace_image_occlusion_inputs,
     summarize_cell,
@@ -88,6 +89,13 @@ class ImageOcclusionReplacementTest(unittest.TestCase):
 
 
 class ImageOcclusionStudyTest(unittest.TestCase):
+    def test_cli_defaults_to_archived_batch_referenced_protocol(self):
+        parser = build_argument_parser()
+        args = parser.parse_args(
+            ["--manifest-root", "/tmp/in", "--output-root", "/tmp/out"]
+        )
+        self.assertEqual(args.batch_size, 256)
+
     def test_study_has_exactly_eighteen_cells(self):
         cells = build_image_occlusion_study()
         self.assertEqual(len(cells), 18)

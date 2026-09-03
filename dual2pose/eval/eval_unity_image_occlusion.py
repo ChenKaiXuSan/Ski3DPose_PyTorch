@@ -420,7 +420,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--pose-occlusion-csv", type=Path, default=DEFAULT_POSE_OCCLUSION)
     parser.add_argument("--gpu", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--failure-threshold", type=float, default=0.15)
@@ -430,6 +430,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_argument_parser().parse_args(argv)
+    if args.batch_size != 256:
+        raise ValueError(
+            "The batch-referenced canonical transform requires --batch-size 256 "
+            "to match the archived protocol"
+        )
     seed_everything(args.seed, workers=True)
     with initialize_config_dir(
         version_base=None,

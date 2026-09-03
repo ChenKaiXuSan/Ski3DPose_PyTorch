@@ -11,8 +11,10 @@ extension:
    corruption of precomputed 3D pose streams.
 
 The extension must preserve every already reported primary number. It uses the
-same fold-0 Unity test actions, the same fixed CanonFuse3D checkpoint, and the
-same dataset-coordinate MPJPE definitions as the existing journal draft.
+same fold-0 Unity test actions, the same fixed CanonFuse3D checkpoint, the same
+dataset-coordinate MPJPE definitions, and the archived evaluation batch size of
+256. Because the executable first-frame transform is batch-referenced, this
+batch size is part of the numerical protocol.
 
 ## Scope and non-goals
 
