@@ -37,6 +37,10 @@ def _finite(row: Mapping[str, Any], key: str) -> float:
     return value
 
 
+def _format_p_value(value: float) -> str:
+    return r"\(<0.001\)" if value < 0.001 else f"{value:.3g}"
+
+
 def _validate_e4(
     significance_path: Path, statistics_path: Path
 ) -> tuple[list[dict[str, str]], dict[str, Any]]:
@@ -114,7 +118,7 @@ def _render_e4_table(rows: Sequence[Mapping[str, Any]], payload: Mapping[str, An
             f"{row['angle_bin'].replace('-', '--')} & {int(float(row['cluster_count'])):,} & "
             f"{float(row['mean_gain_mpjpe']):.4f} & "
             f"[{float(row['mean_gain_ci95_low']):.4f}, {float(row['mean_gain_ci95_high']):.4f}] & "
-            f"{float(row['rank_biserial']):.3f} & {float(row['p_holm']):.3g} \\\\"
+            f"{float(row['rank_biserial']):.3f} & {_format_p_value(float(row['p_holm']))} \\\\"
         )
     omnibus = payload["omnibus"]
     return "\n".join(
@@ -137,7 +141,7 @@ def _render_e4_table(rows: Sequence[Mapping[str, Any]], payload: Mapping[str, An
                 r"CanonFuse3D. Confidence intervals use camera-pair bootstrap resampling; "
                 r"reported $p$ values are Holm-adjusted across six paired Wilcoxon tests. "
                 f"The Kruskal--Wallis angle effect is $p={float(omnibus['p_value']):.3g}$ "
-                f"with $\\epsilon^2={float(omnibus['epsilon_squared']):.3f}$.}}"
+                f"with $\\epsilon^2={float(omnibus['epsilon_squared']):.2g}$.}}"
             ),
             r"\end{table*}",
             "",

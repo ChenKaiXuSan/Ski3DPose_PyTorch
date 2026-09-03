@@ -32,7 +32,7 @@ class E4E5PaperArtifactTest(unittest.TestCase):
                     "mean_gain_ci95_low": 0.11,
                     "mean_gain_ci95_high": 0.13,
                     "rank_biserial": 0.9,
-                    "p_holm": 0.006,
+                    "p_holm": 0.0 if index == 0 else 0.006,
                 }
                 for index, label in enumerate(labels)
             ],
@@ -44,7 +44,7 @@ class E4E5PaperArtifactTest(unittest.TestCase):
                     "omnibus": {
                         "test": "kruskal_wallis",
                         "p_value": 0.0123,
-                        "epsilon_squared": 0.02,
+                        "epsilon_squared": 0.0004856,
                     },
                     "cluster_count": 60,
                     "within_bin": [],
@@ -108,6 +108,8 @@ class E4E5PaperArtifactTest(unittest.TestCase):
         e5_text = (self.table_root / "image_occlusion_summary.tex").read_text()
         self.assertIn("Holm-adjusted", e4_text)
         self.assertIn("0.1234", e4_text)
+        self.assertIn(r"\(<0.001\)", e4_text)
+        self.assertIn(r"\epsilon^2=0.00049", e4_text)
         self.assertIn("Image-level", e5_text)
         self.assertIn("64,440", e5_text)
         self.assertTrue(self.figure_path.is_file())
